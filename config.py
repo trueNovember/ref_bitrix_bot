@@ -37,12 +37,12 @@ if not PARTNER_DEAL_TG_ID_FIELD:
     print("           Менеджеру придется искать ID партнера вручную для /verify.")
 
 # --- 3. Администраторы ---
-admin_ids_str = os.getenv("ADMIN_IDS", "")
-ADMIN_IDS = [
-    int(admin_id) for admin_id in admin_ids_str.split(",") if admin_id.strip().isdigit()
-]
-if not ADMIN_IDS:
-    print("ВНИМАНИЕ: ADMIN_IDS не указаны в .env. Админ-команды не будут работать.")
+SUPER_ADMIN_ID = os.getenv("SUPER_ADMIN_ID")
+if not SUPER_ADMIN_ID or not SUPER_ADMIN_ID.isdigit():
+    raise ValueError("SUPER_ADMIN_ID (число) не указан в .env. Бот не может работать без владельца.")
+
+# Конвертируем в число
+SUPER_ADMIN_ID = int(SUPER_ADMIN_ID)
 
 # --- 4. Веб-сервер ---
 BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL")

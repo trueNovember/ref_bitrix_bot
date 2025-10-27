@@ -1,5 +1,5 @@
 # bot.py
-import asyncio
+
 import logging
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
@@ -15,6 +15,7 @@ import bitrix_api
 from states import PartnerRegistration, ClientSubmission
 import keyboards as kb  # Импортируем клавиатуры с префиксом kb
 from html import escape
+from aiogram.filters import Filter
 
 # --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO)
@@ -48,6 +49,22 @@ GENERIC_ERROR_TEXT = "Произошла ошибка. Попробуйте по
 # === ОБРАБОТЧИКИ TELEGRAM (Логика FSM) ===========================
 # =================================================================
 
+
+class IsAdminFilter(Filter):
+    """Фильтр проверяет, есть ли у пользователя роль (junior or senior)"""
+
+    async def __call__(self, message: Message) -> bool:
+        return await db.get_admin_role(message.from_user.id) is not None
+
+
+class IsSeniorAdminFilter(Filter):
+    """Фильтр проверяет, является ли пользователь Senior админом"""
+
+    async def __call__(self, message: Message) -> bool:
+        role = await db.get_admin_role(message.from_user.id)
+        return role == 'senior'
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     """Обработчик команды /start."""
@@ -73,6 +90,7 @@ async def process_agree(callback: CallbackQuery, state: FSMContext):
     await state.set_state(PartnerRegistration.waiting_for_full_name)
     await callback.answer()
 
+
 # ---  Отмена FSM ---
 @dp.message(F.text == "❌ Отмена")
 async def cmd_cancel(message: Message, state: FSMContext):
@@ -80,6 +98,7 @@ async def cmd_cancel(message: Message, state: FSMContext):
     await message.answer("Действие отменено.", reply_markup=ReplyKeyboardRemove())
     # Вызываем /start, чтобы показать актуальное меню
     await cmd_start(message, state)
+
 
 @dp.message(PartnerRegistration.waiting_for_full_name)
 async def process_name(message: Message, state: FSMContext):
@@ -101,7 +120,7 @@ async def process_phone(message: Message, state: FSMContext):
     # === НОВАЯ ЛОГИКА ===
     # 1. Сначала отправляем в Битрикс, чтобы получить deal_id
     deal_id = await bitrix_api.create_partner_deal(full_name, phone_number, user_id)
-
+    print(deal_id)
     if deal_id:
         # 2. Если успешно, сохраняем в локальную БД (!!! ТЕПЕРЬ 4 АРГУМЕНТА !!!)
         await db.add_partner(user_id, full_name, phone_number, deal_id)
@@ -175,7 +194,7 @@ async def client_address_received(message: Message, state: FSMContext):
 
 # --- 3. Админская часть (Верификация) ---
 
-@dp.message(Command("verify"), F.from_user.id.in_(config.ADMIN_IDS))
+@dp.message(Command("verify"), IsAdminFilter())
 async def cmd_verify(message: Message):
     """
     Команда для верификации.
@@ -228,8 +247,74 @@ async def cmd_verify(message: Message):
 
         await message.answer(f"Ошибка: {error_text}. {usage_text}")
 
+        # --- Команды управления (Только Senior) ---
 
 
+@dp.message(Command("addadmin"), IsSeniorAdminFilter())
+async def cmd_add_admin(message: Message):
+    """Добавляет/обновляет админа. (Только Senior)"""
+    try:
+        # Использование: /addadmin <user_id> <role> [username]
+        parts = message.text.split()
+        if len(parts) < 3:
+            await message.answer("<b>Использование:</b> /addadmin &lt;user_id&gt; &lt;role&gt; [username]")
+            return
+
+        user_id = int(parts[1])
+        role = parts[2].lower()  # 'junior' or 'senior'
+
+        # === ИСПРАВЛЕНИЕ ЗДЕСЬ ===
+        if len(parts) > 3:
+            # Объединяем всё, что идет после role, в одно имя
+            username = " ".join(parts[3:])
+        else:
+            # Оставляем Admin_... по умолчанию, если имя не указано
+            username = f"Admin_{user_id}"
+
+        if role not in ('junior', 'senior'):
+            await message.answer("❌ <b>Неверная роль.</b> Укажите 'junior' или 'senior'.")
+            return
+
+        await db.add_admin(user_id, username, role)
+        await message.answer(f"✅ Админ {username} (ID: {user_id}) успешно добавлен с ролью: <b>{role}</b>.")
+
+    except Exception as e:
+        error_text = escape(str(e))
+        await message.answer(
+            f"<b>Ошибка:</b> {error_text}.\n<b>Использование:</b> /addadmin &lt;user_id&gt; &lt;role&gt; [username]")
+
+
+@dp.message(Command("deladmin"), IsSeniorAdminFilter())
+async def cmd_del_admin(message: Message):
+    """Удаляет админа. (Только Senior)"""
+    try:
+        user_id = int(message.text.split()[1])
+
+        if user_id == config.SUPER_ADMIN_ID:
+            await message.answer("❌ Нельзя удалить Супер-Админа (владельца бота).")
+            return
+
+        await db.remove_admin(user_id)
+        await message.answer(f"✅ Админ (ID: {user_id}) успешно удален.")
+    except Exception as e:
+        error_text = escape(str(e))
+        await message.answer(f"<b>Ошибка:</b> {error_text}.\n<b>Использование:</b> /deladmin &lt;user_id&gt;")
+
+
+@dp.message(Command("listadmins"), IsSeniorAdminFilter())
+async def cmd_list_admins(message: Message):
+    """Показывает список админов. (Только Senior)"""
+    admins = await db.list_admins()
+    if not admins:
+        await message.answer("Список админов пуст.")
+        return
+
+    response = "<b>Список администраторов:</b>\n\n"
+    for user_id, username, role in admins:
+        response += f"• {username} (ID: <code>{user_id}</code>)\n"
+        response += f"  <i>Роль: {role.capitalize()}</i>\n"
+
+    await message.answer(response)
 
 
 # =================================================================
@@ -312,7 +397,7 @@ async def handle_bitrix_webhook(request: web.Request):
 async def on_startup(app_instance: web.Application):
     """Выполняется при старте сервера."""
     await db.init_db()  # Инициализируем базу данных
-
+    await db.add_admin(config.SUPER_ADMIN_ID, "SUPER_ADMIN", "senior")
     # Устанавливаем вебхук для Telegram
     webhook_url = config.BASE_WEBHOOK_URL + config.TELEGRAM_WEBHOOK_PATH
     await bot.set_webhook(

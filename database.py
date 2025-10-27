@@ -35,6 +35,13 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_bitrix_deal_id
             ON clients (bitrix_deal_id)
         ''')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS admins (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                role TEXT NOT NULL CHECK(role IN ('junior', 'senior'))
+            )
+        ''')
         await db.commit()
 
 
@@ -118,3 +125,32 @@ async def get_partner_deal_id_by_user_id(user_id: int):
         async with db.execute(query, (user_id,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else None
+
+async def add_admin(user_id: int, username: str = "", role: str = 'junior'):
+    """Добавляет или обновляет админа с указанной ролью."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO admins (user_id, username, role) VALUES (?, ?, ?)",
+            (user_id, username, role)
+        )
+        await db.commit()
+
+async def list_admins():
+    """Возвращает список всех админов (id, username, role)."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id, username, role FROM admins") as cursor:
+            return await cursor.fetchall()
+
+async def get_admin_role(user_id: int):
+    """Возвращает роль админа ('junior', 'senior') или None."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        query = "SELECT role FROM admins WHERE user_id = ?"
+        async with db.execute(query, (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+async def remove_admin(user_id: int):
+    """Удаляет администратора."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+        await db.commit()

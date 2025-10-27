@@ -17,6 +17,7 @@ async def create_partner_deal(full_name: str, phone: str, user_id: int):
     """
     Отправляет Сделку 'Партнер на верификацию' в Битрикс (в воронку 11).
     Использует aiohttp.
+    !!! ИСПРАВЛЕННАЯ ВЕРСИЯ: Возвращает deal_id, а не True !!!
     """
     url_deal_add = BITRIX_PARTNER_WEBHOOK + "crm.deal.add.json"
     url_contact_add = BITRIX_PARTNER_WEBHOOK + "crm.contact.add.json"
@@ -28,8 +29,11 @@ async def create_partner_deal(full_name: str, phone: str, user_id: int):
         'CATEGORY_ID': PARTNER_FUNNEL_ID,  # Воронка 11
         'SOURCE_ID': 'PARTNER_BOT',
     }
+
+    # Добавляем TG ID, если он указан в конфиге
     if PARTNER_DEAL_TG_ID_FIELD:
         deal_fields[PARTNER_DEAL_TG_ID_FIELD] = user_id
+
     contact_params = {
         'fields': {
             'NAME': full_name,
@@ -54,25 +58,33 @@ async def create_partner_deal(full_name: str, phone: str, user_id: int):
             async with session.post(url_deal_add, json=deal_params) as deal_response:
                 deal_response.raise_for_status()
                 deal_data = await deal_response.json()
-                print(f"Partner deal created: {deal_data}")
-                return True
+
+                # === ВОТ ИСПРАВЛЕНИЕ ===
+                deal_id = deal_data.get('result')
+                if deal_id:
+                    print(f"Partner deal created, ID: {deal_id}")
+                    return deal_id  # <-- Возвращаем ID
+                else:
+                    print(f"Error: Partner deal created but no ID returned. {deal_data}")
+                    return None  # <-- Возвращаем None
+                # ========================
 
     except aiohttp.ClientResponseError as e:
         # Ошибка HTTP (4xx, 5xx)
         print(f"HTTP error creating partner deal: {e.status} - {e.message}")
-        print(f"Response: {await e.text()}")  # Показываем, что ответил Битрикс
-        return False
+        print(f"Response: {await e.text()}")
+        return None  # <-- Исправлено на None
     except aiohttp.ClientConnectorError as e:
         # Ошибка соединения
         print(f"Connection error creating partner deal: {e}")
-        return False
+        return None  # <-- Исправлено на None
     except Exception as e:
-        # Другие ошибки (например, JSONDecodeError или таймаут)
+        # Другие ошибки
         print("--- ПОЛНАЯ ОШИБКА В create_partner_deal ---")
         print(traceback.format_exc())
         print("------------------------------------------")
         print(f"Error creating partner deal: {e}")
-        return False
+        return None  # <-- Исправлено на None
 
 
 async def create_client_deal(client_name: str, client_phone: str, client_address: str, partner_name: str):
