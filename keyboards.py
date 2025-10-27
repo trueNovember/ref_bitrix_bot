@@ -55,3 +55,23 @@ def get_cancel_keyboard():
         resize_keyboard=True,
         one_time_keyboard=True
     )
+
+def get_verification_keyboard(partner_user_id: int):
+    """
+    Клавиатура для админов для верификации нового партнера.
+    Мы "зашиваем" ID партнера прямо в callback_data.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✅ Одобрить",
+                # "verify_partner:123456789"
+                callback_data=f"verify_partner:{partner_user_id}"
+            ),
+            InlineKeyboardButton(
+                text="❌ Отклонить",
+                # "reject_partner:123456789"
+                callback_data=f"reject_partner:{partner_user_id}"
+            )
+        ]
+    ])

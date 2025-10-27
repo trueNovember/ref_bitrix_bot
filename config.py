@@ -16,6 +16,7 @@ BITRIX_CLIENT_WEBHOOK = os.getenv("BITRIX_CLIENT_WEBHOOK")
 PARTNER_DEAL_FIELD = os.getenv("PARTNER_DEAL_FIELD")
 BITRIX_INCOMING_SECRET = os.getenv("BITRIX_INCOMING_SECRET")
 BITRIX_PARTNER_VERIFIED_STAGE_ID = os.getenv("BITRIX_PARTNER_VERIFIED_STAGE_ID")
+BITRIX_PARTNER_REJECTED_STAGE_ID = os.getenv("BITRIX_PARTNER_REJECTED_STAGE_ID")
 # НОВАЯ ПЕРЕМЕННАЯ: ID воронки для партнеров
 PARTNER_FUNNEL_ID = os.getenv("PARTNER_FUNNEL_ID")
 
@@ -28,7 +29,8 @@ if not all([
     PARTNER_DEAL_FIELD,
     BITRIX_INCOMING_SECRET,
     PARTNER_FUNNEL_ID,
-    BITRIX_PARTNER_VERIFIED_STAGE_ID  # <-- ДОБАВЬТЕ ЭТУ СТРОКУ
+    BITRIX_PARTNER_VERIFIED_STAGE_ID,
+    BITRIX_PARTNER_REJECTED_STAGE_ID  # <-- Добавили сюда
 ]):
     raise ValueError("Необходимо заполнить все *обязательные* переменные BITRIX_* в .env файле")
 

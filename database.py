@@ -154,3 +154,12 @@ async def remove_admin(user_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
         await db.commit()
+
+async def get_all_admin_ids():
+    """Возвращает список ID всех админов (junior и senior)."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        query = "SELECT user_id FROM admins"
+        async with db.execute(query) as cursor:
+            rows = await cursor.fetchall()
+            # Превращаем список кортежей [(123,), (456,)] в список [123, 456]
+            return [row[0] for row in rows]

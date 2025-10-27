@@ -117,14 +117,33 @@ async def process_phone(message: Message, state: FSMContext):
 
     await state.clear()
 
-    # === НОВАЯ ЛОГИКА ===
     # 1. Сначала отправляем в Битрикс, чтобы получить deal_id
     deal_id = await bitrix_api.create_partner_deal(full_name, phone_number, user_id)
-    print(deal_id)
+
     if deal_id:
-        # 2. Если успешно, сохраняем в локальную БД (!!! ТЕПЕРЬ 4 АРГУМЕНТА !!!)
+        # 2. Если успешно, сохраняем в локальную БД
         await db.add_partner(user_id, full_name, phone_number, deal_id)
         await message.answer(PENDING_VERIFICATION_TEXT, reply_markup=ReplyKeyboardRemove())
+
+        # === НОВАЯ ЛОГИКА: УВЕДОМЛЕНИЕ АДМИНОВ ===
+        admin_ids = await db.get_all_admin_ids()
+
+        notification_text = (
+            f"🔔 <b>Новая заявка на партнерство!</b>\n\n"
+            f"<b>ФИО:</b> {escape(full_name)}\n"
+            f"<b>Телефон:</b> {escape(phone_number)}\n"
+            f"<b>Telegram ID:</b> <code>{user_id}</code>"
+        )
+        # Получаем нашу новую клавиатуру
+        keyboard = kb.get_verification_keyboard(user_id)
+
+        for admin_id in admin_ids:
+            try:
+                await bot.send_message(admin_id, notification_text, reply_markup=keyboard)
+            except Exception as e:
+                logging.warning(f"Не удалось отправить уведомление админу {admin_id}: {e}")
+        # =======================================
+
     else:
         # 3. Если ошибка
         await message.answer(GENERIC_ERROR_TEXT, reply_markup=ReplyKeyboardRemove())
@@ -197,57 +216,65 @@ async def client_address_received(message: Message, state: FSMContext):
 @dp.message(Command("verify"), IsAdminFilter())
 async def cmd_verify(message: Message):
     """
-    Команда для верификации.
-    Использование: /verify 123456789
-    Теперь она также ОБНОВЛЯЕТ сделку в Битриксе.
+    Команда для верификации (Ручной режим).
+    Доступна 'junior' и 'senior' админам.
     """
     try:
         user_id_to_verify = int(message.text.split()[1])
-
-        # 1. Находим ID сделки, связанной с этим партнером
-        deal_id = await db.get_partner_deal_id_by_user_id(user_id_to_verify)
-
-        if not deal_id:
-            await message.answer(
-                f"❌ Ошибка: Партнер с ID {user_id_to_verify} найден в боте, но с ним не связана сделка в Битриксе.")
-            return
-
-        # 2. Обновляем статус в нашей БД
-        await db.set_partner_status(user_id_to_verify, 'verified')
-
-        # 3. Отправляем команду в Битрикс на передвижение сделки
-        success = await bitrix_api.move_deal_stage(
-            deal_id,
-            config.BITRIX_PARTNER_VERIFIED_STAGE_ID  # Используем ID "успешного" этапа
+        # Вызываем нашу "ядерную" функцию
+        await process_partner_verification(
+            admin_id=message.from_user.id,
+            partner_user_id=user_id_to_verify,
+            new_status='verified'
         )
-
-        if success:
-            await message.answer(
-                f"✅ Партнер {user_id_to_verify} верифицирован. Сделка {deal_id} в Битриксе передвинута.")
-        else:
-            await message.answer(
-                f"⚠️ Партнер {user_id_to_verify} верифицирован в боте, но не удалось передвинуть сделку {deal_id} в Битриксе.")
-
-        # 4. Уведомляем партнера
-        try:
-            await bot.send_message(
-                user_id_to_verify,
-                VERIFIED_TEXT,
-                reply_markup=kb.get_verified_partner_menu()
-            )
-        except Exception as e:
-            await message.answer(f"Не удалось уведомить партнера (возможно, он заблокировал бота): {e}")
     except Exception as e:
-
-        # Мы экранируем и ошибку {e}, и наш <user_id>, чтобы все было безопасно
-
         error_text = escape(str(e))
-
         usage_text = "Использование: /verify &lt;user_id&gt;"
-
         await message.answer(f"Ошибка: {error_text}. {usage_text}")
 
-        # --- Команды управления (Только Senior) ---
+
+@dp.callback_query(F.data.startswith("verify_partner:"))
+async def on_verify_partner(callback: CallbackQuery):
+    """
+    Ловит нажатие кнопки '✅ Одобрить'.
+    """
+    # Проверяем, что тот, кто нажал - админ
+    if not await db.get_admin_role(callback.from_user.id):
+        await callback.answer("❌ У вас нет прав для этого действия.", show_alert=True)
+        return
+
+    # Извлекаем ID партнера из "verify_partner:123456"
+    partner_user_id = int(callback.data.split(":")[1])
+
+    await process_partner_verification(
+        admin_id=callback.from_user.id,
+        partner_user_id=partner_user_id,
+        new_status='verified',
+        callback=callback
+    )
+
+
+@dp.callback_query(F.data.startswith("reject_partner:"))
+async def on_reject_partner(callback: CallbackQuery):
+    """
+    Ловит нажатие кнопки '❌ Отклонить'.
+    """
+    if not await db.get_admin_role(callback.from_user.id):
+        await callback.answer("❌ У вас нет прав для этого действия.", show_alert=True)
+        return
+
+    partner_user_id = int(callback.data.split(":")[1])
+
+    await process_partner_verification(
+        admin_id=callback.from_user.id,
+        partner_user_id=partner_user_id,
+        new_status='rejected',
+        callback=callback
+    )
+
+
+
+# --- Команды управления (Только Senior) ---
 
 
 @dp.message(Command("addadmin"), IsSeniorAdminFilter())
@@ -315,6 +342,75 @@ async def cmd_list_admins(message: Message):
         response += f"  <i>Роль: {role.capitalize()}</i>\n"
 
     await message.answer(response)
+
+
+async def process_partner_verification(
+        admin_id: int,
+        partner_user_id: int,
+        new_status: str,
+        callback: CallbackQuery = None
+):
+    """
+    "Ядро" верификации. Вызывается из cmd_verify и из callback-ов.
+    new_status: 'verified' или 'rejected'
+    """
+    try:
+        # 1. Проверяем, что партнер еще не обработан
+        current_status = await db.get_partner_status(partner_user_id)
+        if current_status != 'pending':
+            if callback:
+                await callback.answer(f"Этот партнер уже был обработан.", show_alert=True)
+            else:
+                await bot.send_message(admin_id, f"❌ Этот партнер уже был обработан.")
+            return
+
+        # 2. Находим ID сделки партнера
+        deal_id = await db.get_partner_deal_id_by_user_id(partner_user_id)
+        if not deal_id:
+            raise Exception(f"Не найден deal_id для партнера {partner_user_id}")
+
+        # 3. Обновляем статус в нашей БД
+        await db.set_partner_status(partner_user_id, new_status)
+
+        # 4. Двигаем сделку в Битриксе
+        if new_status == 'verified':
+            stage_id = config.BITRIX_PARTNER_VERIFIED_STAGE_ID
+            notification_text = VERIFIED_TEXT
+            reply_markup = kb.get_verified_partner_menu()
+        else:  # 'rejected'
+            stage_id = config.BITRIX_PARTNER_REJECTED_STAGE_ID
+            notification_text = REJECTED_TEXT
+            reply_markup = ReplyKeyboardRemove()
+
+        success_b24 = False
+        if stage_id:
+            success_b24 = await bitrix_api.move_deal_stage(deal_id, stage_id)
+
+        # 5. Уведомляем партнера и админа
+        await bot.send_message(partner_user_id, notification_text, reply_markup=reply_markup)
+
+        admin_answer = f"✅ Партнер {partner_user_id} успешно {new_status}."
+        if stage_id and not success_b24:
+            admin_answer += f"\n⚠️ Не удалось передвинуть сделку {deal_id} в Битрикс."
+
+        # Если это был клик по кнопке, отвечаем иначе
+        if callback:
+            # Редактируем исходное сообщение, чтобы убрать кнопки
+            admin_username = callback.from_user.username or "Админ"
+            await callback.message.edit_text(
+                callback.message.text + f"\n\n<b>Обработано:</b> @{admin_username}\n<b>Статус:</b> {new_status.capitalize()}"
+            )
+            await callback.answer(admin_answer)
+        else:
+            await bot.send_message(admin_id, admin_answer)
+
+    except Exception as e:
+        error_text = f"Ошибка при верификации {partner_user_id}: {e}"
+        logging.error(error_text)
+        if callback:
+            await callback.answer(error_text, show_alert=True)
+        else:
+            await bot.send_message(admin_id, error_text)
 
 
 # =================================================================
