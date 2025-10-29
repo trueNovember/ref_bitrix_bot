@@ -16,6 +16,7 @@ from states import PartnerRegistration, ClientSubmission
 import keyboards as kb  # Импортируем клавиатуры с префиксом kb
 from html import escape
 from aiogram.filters import Filter
+import math
 
 # --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO)
@@ -68,11 +69,11 @@ STATUS_PENDING_REVOKED_TEXT = """
 def get_client_stage_name(stage_id: str) -> str:
     """Превращает системный ID стадии в понятное название."""
     stages_map = {
-        config.BITRIX_CLIENT_STAGE_1: "Новая заявка",
-        config.BITRIX_CLIENT_STAGE_2: "Замер",
+        config.BITRIX_CLIENT_STAGE_1: "Клиенты в обработке",
+        config.BITRIX_CLIENT_STAGE_2: "С клиентом назначена встреча",
         config.BITRIX_CLIENT_STAGE_3: "Расчет сметы",
-        config.BITRIX_CLIENT_STAGE_WIN: "Договор подписан",
-        config.BITRIX_CLIENT_STAGE_LOSE: "Отказ"
+        config.BITRIX_CLIENT_STAGE_WIN: "С клиентом заключен договор",
+        config.BITRIX_CLIENT_STAGE_LOSE: "Отказ клиента"
     }
     # Возвращаем название или сам ID, если название не найдено
     return stages_map.get(stage_id, stage_id)
@@ -354,7 +355,9 @@ async def on_reject_partner(callback: CallbackQuery):
         new_status='rejected',
         callback=callback
     )
-
+@dp.callback_query(F.data == "noop")
+async def noop_callback(callback: CallbackQuery):
+    await callback.answer() # Просто закрываем "часики"
 
 # --- Команды управления (Только Senior) ---
 
@@ -516,11 +519,14 @@ async def process_partner_verification(
         else:
             await bot.send_message(admin_id, error_text)
 
-@dp.message(F.text == "📊 Мои клиенты") # Доступно только админам
-async def show_my_clients(message: Message):
+@dp.message(F.text == "📊 Мои клиенты")
+async def show_my_clients(message: Message, state: FSMContext, offset: int = 0):
     """
-    Показывает партнеру список отправленных им клиентов и их статусы.
+    Показывает партнеру список отправленных им клиентов (с пагинацией).
+    offset - смещение для пагинации (начинается с 0).
     """
+    CLIENTS_PER_PAGE = 5
+    await state.clear() # На всякий случай сбрасываем состояние
     partner_id = message.from_user.id
     status = await db.get_partner_status(partner_id)
 
@@ -528,18 +534,66 @@ async def show_my_clients(message: Message):
         await message.answer("Эта функция доступна только верифицированным партнерам.")
         return
 
-    clients = await db.get_clients_by_partner_id(partner_id)
+    # Получаем общее количество клиентов
+    total_clients = await db.count_clients_by_partner_id(partner_id)
 
-    if not clients:
+    if total_clients == 0:
         await message.answer("Вы еще не отправляли клиентов.")
         return
 
-    response_text = "<b>Ваши отправленные клиенты:</b>\n\n"
-    for i, (client_name, client_status) in enumerate(clients, 1):
+    # Получаем клиентов для ТЕКУЩЕЙ страницы
+    clients = await db.get_clients_by_partner_id(partner_id, limit=CLIENTS_PER_PAGE, offset=offset)
+
+    if not clients and offset > 0: # Если вдруг попали на пустую страницу
+         await message.answer("Больше клиентов нет.")
+         return
+    # Формируем текст сообщения
+    response_text = f"<b>Ваши отправленные клиенты (Страница {offset // CLIENTS_PER_PAGE + 1} / {math.ceil(total_clients / CLIENTS_PER_PAGE)}):</b>\n\n"
+    # Нумеруем клиентов начиная с offset + 1
+    start_index = offset + 1
+    for i, (client_name, client_status) in enumerate(clients, start=start_index):
         response_text += f"{i}. <b>{escape(client_name)}</b>\n   Статус: <i>{escape(client_status)}</i>\n"
 
-    await message.answer(response_text)
+    # Получаем клавиатуру пагинации
+    keyboard = kb.get_clients_pagination_keyboard(offset, total_clients)
 
+    # Отправляем сообщение
+    await message.answer(response_text, reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("prev_clients:") | F.data.startswith("next_clients:"))
+async def paginate_clients(callback: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает нажатия кнопок пагинации "Назад" и "Вперед".
+    """
+    CLIENTS_PER_PAGE = 5
+    try:
+        # Извлекаем новый offset из callback_data (e.g., "next_clients:5")
+        new_offset = int(callback.data.split(":")[1])
+
+        partner_id = callback.from_user.id
+        total_clients = await db.count_clients_by_partner_id(partner_id)
+        clients = await db.get_clients_by_partner_id(partner_id, limit=CLIENTS_PER_PAGE, offset=new_offset)
+
+        if not clients:
+            await callback.answer("Больше клиентов нет.")
+            return
+
+        # Формируем новый текст
+        response_text = f"<b>Ваши отправленные клиенты (Страница {new_offset // CLIENTS_PER_PAGE + 1} / {math.ceil(total_clients / CLIENTS_PER_PAGE)}):</b>\n\n"
+        start_index = new_offset + 1
+        for i, (client_name, client_status) in enumerate(clients, start=start_index):
+            response_text += f"{i}. <b>{escape(client_name)}</b>\n   Статус: <i>{escape(client_status)}</i>\n"
+
+        # Получаем новую клавиатуру
+        keyboard = kb.get_clients_pagination_keyboard(new_offset, total_clients)
+
+        # Редактируем исходное сообщение
+        await callback.message.edit_text(response_text, reply_markup=keyboard)
+        await callback.answer() # Закрываем часики
+
+    except Exception as e:
+        logging.error(f"Ошибка пагинации клиентов: {e}")
+        await callback.answer("Произошла ошибка при загрузке.")
 # =================================================================
 # === ОБРАБОТЧИКИ AIOHTTP (Сервер) ================================
 # =================================================================
@@ -622,10 +676,10 @@ async def handle_bitrix_webhook(request: web.Request):
 
         # === НОВАЯ ЛОГИКА: Обрабатываем ивент КЛИЕНТА ===
         elif event_type == 'client_deal_update':
-            new_stage_id = status_or_stage_id
+            new_stage_id = status_or_stage_id  # Получаем ID новой стадии (e.g., 'C0:5')
 
             # Ищем, какому партнеру принадлежит эта сделка
-            partner_id = await db.get_partner_id_by_deal_id(deal_id)
+            partner_id, client_name = await db.get_partner_and_client_by_deal_id(deal_id)
 
             if partner_id:
                 logging.info(f"Обновляем Сделку-Клиента {deal_id} для партнера {partner_id}")
@@ -636,14 +690,27 @@ async def handle_bitrix_webhook(request: web.Request):
                 # Обновляем статус в нашей локальной БД
                 await db.update_client_status_by_deal_id(deal_id, stage_name)
 
-                # Отправляем уведомление партнеру
-                try:
-                    await bot.send_message(
-                        partner_id,
-                        f"ℹ️ Статус вашего клиента (сделка №{deal_id}) был обновлен.\n<b>Новый этап:</b> {stage_name}"
-                    )
-                except Exception as e:
-                    logging.warning(f"Не удалось уведомить партнера {partner_id} о сделке {deal_id}: {e}")
+                # === ИЗМЕНЕНИЕ ЗДЕСЬ: Отправляем уведомление ТОЛЬКО для нужных стадий ===
+                # Собираем ID "важных" стадий из конфига
+                important_stages = [
+                    get_client_stage_name(config.BITRIX_CLIENT_STAGE_2),  # "Назначена встреча"
+                    get_client_stage_name(config.BITRIX_CLIENT_STAGE_WIN)  # "Подписан договор"
+                ]
+                # Проверяем, является ли новая стадия одной из "важных"
+                if new_stage_id in important_stages:
+                    try:
+                        await bot.send_message(
+                            partner_id,
+                            f"ℹ️ Статус вашего клиента <b>{escape(client_name)}</b> был обновлен.\n<b>Новый этап:</b> {stage_name}"
+                        )
+                        logging.info(
+                            f"Партнеру {partner_id} отправлено уведомление о стадии '{stage_name}' (сделка {deal_id}).")
+                    except Exception as e:
+                        logging.warning(f"Не удалось уведомить партнера {partner_id} о сделке {deal_id}: {e}")
+                else:
+                    logging.info(
+                        f"Стадия '{stage_name}' (сделка {deal_id}) не требует уведомления партнера {partner_id}.")
+                # =========================================================================
             else:
                 logging.warning(f"Получен апдейт по Сделке-Клиенту {deal_id}, но она не найдена в нашей БД.")
         # ========================================

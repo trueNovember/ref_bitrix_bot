@@ -92,13 +92,19 @@ async def add_client(partner_user_id: int, bitrix_deal_id: int, client_name: str
         await db.commit()
 
 
-async def get_partner_id_by_deal_id(bitrix_deal_id: int):
-    """Находит ID партнера, которому принадлежит эта сделка."""
+async def get_partner_and_client_by_deal_id(bitrix_deal_id: int):
+    """
+    Находит ID партнера и ИМЯ КЛИЕНТА по ID сделки в Битрикс.
+    Возвращает кортеж (partner_user_id, client_name) или (None, None).
+    """
     async with aiosqlite.connect(DB_NAME) as db:
-        query = "SELECT partner_user_id FROM clients WHERE bitrix_deal_id = ?"
+        query = "SELECT partner_user_id, client_name FROM clients WHERE bitrix_deal_id = ?"
         async with db.execute(query, (bitrix_deal_id,)) as cursor:
             row = await cursor.fetchone()
-            return row[0] if row else None
+            if row:
+                return row[0], row[1] # partner_user_id, client_name
+            else:
+                return None, None
 
 
 async def update_client_status_by_deal_id(bitrix_deal_id: int, new_status_name: str):
@@ -109,14 +115,23 @@ async def update_client_status_by_deal_id(bitrix_deal_id: int, new_status_name: 
         await db.commit()
 
 
-async def get_clients_by_partner_id(partner_user_id: int):
-    """Получает список клиентов для конкретного партнера."""
+async def get_clients_by_partner_id(partner_user_id: int, limit: int = 5, offset: int = 0):
+    """
+    Получает список клиентов для конкретного партнера с пагинацией.
+    Сортирует по ID (новые сверху).
+    """
     async with aiosqlite.connect(DB_NAME) as db:
-        query = "SELECT client_name, status FROM clients WHERE partner_user_id = ?"
-        async with db.execute(query, (partner_user_id,)) as cursor:
+        # Сортируем по client_id DESC, чтобы новые были первыми
+        query = """
+            SELECT client_name, status 
+            FROM clients 
+            WHERE partner_user_id = ? 
+            ORDER BY client_id DESC 
+            LIMIT ? OFFSET ? 
+        """
+        async with db.execute(query, (partner_user_id, limit, offset)) as cursor:
             rows = await cursor.fetchall()
-            return rows  # Будет список кортежей [('Клиент 1', 'Статус 1'), ...]
-# database.py (в конец файла)
+            return rows # Будет список кортежей [('Клиент 1', 'Статус 1'), ...]
 
 async def get_partner_deal_id_by_user_id(user_id: int):
     """Находит ID Сделки-Партнера по его Telegram ID."""
@@ -171,3 +186,11 @@ async def get_junior_admin_ids():
         async with db.execute(query) as cursor:
             rows = await cursor.fetchall()
             return [row[0] for row in rows]
+
+async def count_clients_by_partner_id(partner_user_id: int):
+    """Подсчитывает общее количество клиентов для партнера."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        query = "SELECT COUNT(*) FROM clients WHERE partner_user_id = ?"
+        async with db.execute(query, (partner_user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0

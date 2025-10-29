@@ -5,6 +5,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton
 )
+import math
 
 # --- Клавиатуры для процесса регистрации ---
 
@@ -86,3 +87,44 @@ def get_client_confirmation_keyboard():
             InlineKeyboardButton(text="🔄 Заполнить заново", callback_data="retry_client_submission")
         ]
     ])
+
+
+CLIENTS_PER_PAGE = 5  # Сколько клиентов показывать на странице
+
+
+def get_clients_pagination_keyboard(current_offset: int, total_clients: int):
+    """
+    Создает инлайн-клавиатуру для пагинации списка клиентов.
+    """
+    if total_clients <= CLIENTS_PER_PAGE:
+        # Если клиентов мало, кнопки не нужны
+        return None
+
+    # Рассчитываем пагинацию
+    current_page = current_offset // CLIENTS_PER_PAGE + 1
+    total_pages = math.ceil(total_clients / CLIENTS_PER_PAGE)
+
+    buttons = []
+
+    # Кнопка "Назад"
+    if current_offset > 0:
+        prev_offset = max(0, current_offset - CLIENTS_PER_PAGE)
+        buttons.append(
+            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"prev_clients:{prev_offset}")
+        )
+
+    # Кнопка с номером страницы
+    buttons.append(
+        InlineKeyboardButton(text=f"{current_page}/{total_pages}", callback_data="noop")  # noop = no operation
+    )
+
+    # Кнопка "Вперед"
+    if current_offset + CLIENTS_PER_PAGE < total_clients:
+        next_offset = current_offset + CLIENTS_PER_PAGE
+        buttons.append(
+            InlineKeyboardButton(text="Вперед ➡️", callback_data=f"next_clients:{next_offset}")
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+
+
