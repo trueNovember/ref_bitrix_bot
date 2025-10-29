@@ -15,3 +15,4 @@ class ClientSubmission(StatesGroup):
     waiting_for_client_name = State()   # Ожидание ФИО клиента
     waiting_for_client_phone = State()  # Ожидание телефона клиента
     waiting_for_client_address = State() # Ожидание адреса клиента
+    confirming_data = State()

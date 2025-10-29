@@ -170,5 +170,4 @@ async def get_junior_admin_ids():
         query = "SELECT user_id FROM admins WHERE role = 'junior'"
         async with db.execute(query) as cursor:
             rows = await cursor.fetchall()
-            # Превращаем список кортежей [(123,), (456,)] в список [123, 456]
             return [row[0] for row in rows]

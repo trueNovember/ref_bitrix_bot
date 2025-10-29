@@ -36,8 +36,8 @@ def get_verified_partner_menu():
     """
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🚀 Отправить клиента")]
-            # Сюда можно будет добавить "📊 Мои клиенты"
+            [KeyboardButton(text="🚀 Отправить клиента")],
+            [KeyboardButton(text="📊 Мои клиенты")]
         ],
         resize_keyboard=True
     )
@@ -73,5 +73,16 @@ def get_verification_keyboard(partner_user_id: int):
                 # "reject_partner:123456789"
                 callback_data=f"reject_partner:{partner_user_id}"
             )
+        ]
+    ])
+
+def get_client_confirmation_keyboard():
+    """
+    Кнопки "Подтвердить" / "Заполнить заново" для отправки клиента.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_client_submission"),
+            InlineKeyboardButton(text="🔄 Заполнить заново", callback_data="retry_client_submission")
         ]
     ])

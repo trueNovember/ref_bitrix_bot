@@ -6,7 +6,9 @@ from config import (
     BITRIX_CLIENT_WEBHOOK,
     PARTNER_DEAL_FIELD,
     PARTNER_FUNNEL_ID,  # ID воронки 11
-    PARTNER_DEAL_TG_ID_FIELD
+    PARTNER_DEAL_TG_ID_FIELD,
+    BITRIX_CLIENT_FUNNEL_ID,
+    PARTNER_DEAL_FIELD
 )
 
 
@@ -89,10 +91,10 @@ async def create_partner_deal(full_name: str, phone: str, user_id: int):
 
 async def create_client_deal(client_name: str, client_phone: str, client_address: str, partner_name: str):
     """
-    Отправляет сделку 'Новый клиент' в Битрикс (в основную воронку).
+    Отправляет сделку 'Новый клиент' в Битрикс (в воронку КЛИЕНТОВ).
     Возвращает ID созданной сделки (deal_id) или None.
-    Использует aiohttp.
     """
+    # Используем ВЕБХУК №2 (для клиентов)
     url_deal_add = BITRIX_CLIENT_WEBHOOK + "crm.deal.add.json"
     url_contact_add = BITRIX_CLIENT_WEBHOOK + "crm.contact.add.json"
 
@@ -101,7 +103,12 @@ async def create_client_deal(client_name: str, client_phone: str, client_address
     deal_fields = {
         'TITLE': deal_title,
         'SOURCE_ID': 'PARTNER_BOT_LEAD',
-        PARTNER_DEAL_FIELD: partner_name  # Привязка к партнеру
+
+        # === НОВЫЕ ПОЛЯ ===
+        'CATEGORY_ID': BITRIX_CLIENT_FUNNEL_ID,  # Указываем нужную воронку
+        PARTNER_DEAL_FIELD: partner_name,  # Поле, где хранится ФИО партнера
+        'STAGE_ID': 'C11:UC_JVUM2G'
+        # ==================
     }
 
     contact_params = {
@@ -135,12 +142,13 @@ async def create_client_deal(client_name: str, client_phone: str, client_address
                     print(f"Client deal created, ID: {deal_id}")
                     return deal_id  # Возвращаем ID
                 else:
-                    print(f"Error: Deal created but no ID returned. {deal_data}")
+                    print(f"Error: Client deal created but no ID returned. {deal_data}")
                     return None
+
 
     except aiohttp.ClientResponseError as e:
         print(f"HTTP error creating client deal: {e.status} - {e.message}")
-        print(f"Response: {await e.text()}")
+        # We removed the problematic line. The status and message are enough.
         return None
     except aiohttp.ClientConnectorError as e:
         print(f"Connection error creating client deal: {e}")

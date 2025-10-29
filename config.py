@@ -19,19 +19,34 @@ BITRIX_PARTNER_VERIFIED_STAGE_ID = os.getenv("BITRIX_PARTNER_VERIFIED_STAGE_ID")
 BITRIX_PARTNER_REJECTED_STAGE_ID = os.getenv("BITRIX_PARTNER_REJECTED_STAGE_ID")
 # НОВАЯ ПЕРЕМЕННАЯ: ID воронки для партнеров
 PARTNER_FUNNEL_ID = os.getenv("PARTNER_FUNNEL_ID")
-
 PARTNER_DEAL_TG_ID_FIELD = os.getenv("PARTNER_DEAL_TG_ID_FIELD")
 
+# === НОВЫЙ БЛОК ЧТЕНИЯ ===
+BITRIX_CLIENT_FUNNEL_ID = os.getenv("BITRIX_CLIENT_FUNNEL_ID")
+BITRIX_CLIENT_STAGE_1 = os.getenv("BITRIX_CLIENT_STAGE_1")
+BITRIX_CLIENT_STAGE_2 = os.getenv("BITRIX_CLIENT_STAGE_2")
+BITRIX_CLIENT_STAGE_3 = os.getenv("BITRIX_CLIENT_STAGE_3")
+BITRIX_CLIENT_STAGE_WIN = os.getenv("BITRIX_CLIENT_STAGE_WIN")
+BITRIX_CLIENT_STAGE_LOSE = os.getenv("BITRIX_CLIENT_STAGE_LOSE")
+# ========================
+
 # Проверяем, что все поля Битрикса заполнены
-if not all([
+critical_b24_vars = [
     BITRIX_PARTNER_WEBHOOK,
     BITRIX_CLIENT_WEBHOOK,
     PARTNER_DEAL_FIELD,
     BITRIX_INCOMING_SECRET,
     PARTNER_FUNNEL_ID,
     BITRIX_PARTNER_VERIFIED_STAGE_ID,
-    BITRIX_PARTNER_REJECTED_STAGE_ID  # <-- Добавили сюда
-]):
+    BITRIX_PARTNER_REJECTED_STAGE_ID,
+    BITRIX_CLIENT_FUNNEL_ID,
+    BITRIX_CLIENT_STAGE_1,
+    BITRIX_CLIENT_STAGE_2,
+    BITRIX_CLIENT_STAGE_3,
+    BITRIX_CLIENT_STAGE_WIN,
+    BITRIX_CLIENT_STAGE_LOSE
+                            ]
+if not all(critical_b24_vars):
     raise ValueError("Необходимо заполнить все *обязательные* переменные BITRIX_* в .env файле")
 
 if not PARTNER_DEAL_TG_ID_FIELD:
