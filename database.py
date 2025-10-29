@@ -163,3 +163,12 @@ async def get_all_admin_ids():
             rows = await cursor.fetchall()
             # Превращаем список кортежей [(123,), (456,)] в список [123, 456]
             return [row[0] for row in rows]
+
+async def get_junior_admin_ids():
+    """Возвращает список ID только JUNIOR админов."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        query = "SELECT user_id FROM admins WHERE role = 'junior'"
+        async with db.execute(query) as cursor:
+            rows = await cursor.fetchall()
+            # Превращаем список кортежей [(123,), (456,)] в список [123, 456]
+            return [row[0] for row in rows]

@@ -53,6 +53,6 @@ if not BASE_WEBHOOK_URL:
 
 # --- 5. Генерируемые (не секретные) настройки ---
 TELEGRAM_WEBHOOK_PATH = f"/webhook/telegram/{BOT_TOKEN[-10:]}"
-BITRIX_WEBHOOK_PATH = f"/webhook/bitrix/{BITRIX_INCOMING_SECRET[:10]}"
+BITRIX_WEBHOOK_PATH = f"/webhook/bitrix/{BITRIX_INCOMING_SECRET}"
 WEB_SERVER_HOST = "0.0.0.0"
 WEB_SERVER_PORT = int(os.getenv("WEB_SERVER_PORT", 8080))

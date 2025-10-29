@@ -26,7 +26,7 @@ dp = Dispatcher()
 app = web.Application()
 
 # --- Тексты бота ---
-WELCOME_TEXT = WELCOME_TEXT = """
+WELCOME_TEXT = """
 Здравствуйте! 🤝
 
 Это бот партнерской системы компании [Название Вашей Компании].
@@ -44,7 +44,25 @@ VERIFIED_TEXT = "✅ Вы верифицированный партнер. Те�
 REJECTED_TEXT = "❌ К сожалению, ваша заявка на партнерство была отклонена."
 GENERIC_ERROR_TEXT = "Произошла ошибка. Попробуйте позже."
 
+STATUS_REJECTED_REVOKED_TEXT = """
+<b>Уведомление об изменении статуса 🔔</b>
 
+Здравствуйте. Уведомляем вас, что статус вашей партнерской заявки был пересмотрен.
+
+<b>Новый статус:</b> <i>Отклонено</i>.
+
+Доступ к отправке клиентов закрыт. Для уточнения причин, пожалуйста, свяжитесь с вашим менеджером.
+"""
+
+STATUS_PENDING_REVOKED_TEXT = """
+<b>Внимание: Ошибка статуса</b>
+
+Здравствуйте. Похоже, произошла системная ошибка, или ваш статус верификации был возвращен на этап "На рассмотрении".
+
+<b>Новый статус:</b> <i>В ожидании</i>.
+
+Доступ к отправке клиентов временно приостановлен. Пожалуйста, свяжитесь с вашим менеджером для прояснения ситуации.
+"""
 # =================================================================
 # === ОБРАБОТЧИКИ TELEGRAM (Логика FSM) ===========================
 # =================================================================
@@ -126,7 +144,7 @@ async def process_phone(message: Message, state: FSMContext):
         await message.answer(PENDING_VERIFICATION_TEXT, reply_markup=ReplyKeyboardRemove())
 
         # === НОВАЯ ЛОГИКА: УВЕДОМЛЕНИЕ АДМИНОВ ===
-        admin_ids = await db.get_all_admin_ids()
+        admin_ids = await db.get_junior_admin_ids()
 
         notification_text = (
             f"🔔 <b>Новая заявка на партнерство!</b>\n\n"
@@ -273,7 +291,6 @@ async def on_reject_partner(callback: CallbackQuery):
     )
 
 
-
 # --- Команды управления (Только Senior) ---
 
 
@@ -355,6 +372,8 @@ async def process_partner_verification(
     new_status: 'verified' или 'rejected'
     """
     try:
+        partner_data = await db.get_partner_data(partner_user_id)
+        partner_name = partner_data.get('full_name', f'ID: {partner_user_id}')
         # 1. Проверяем, что партнер еще не обработан
         current_status = await db.get_partner_status(partner_user_id)
         if current_status != 'pending':
@@ -401,6 +420,26 @@ async def process_partner_verification(
                 callback.message.text + f"\n\n<b>Обработано:</b> @{admin_username}\n<b>Статус:</b> {new_status.capitalize()}"
             )
             await callback.answer(admin_answer)
+
+            # === НОВАЯ ЛОГИКА: Рассылка остальным админам ===
+            all_junior_ids = await db.get_junior_admin_ids()
+
+            # Сообщение для остальных
+            notification_text_others = (
+                f"🔔 Заявка партнера <b>{escape(partner_name)}</b> была обработана.\n"
+                f"<b>Статус:</b> {new_status.capitalize()}\n"
+                f"<b>Менеджер:</b> @{admin_username}"
+            )
+
+            for admin_id in all_junior_ids:
+                # Не отправляем сообщение тому, кто УЖЕ нажал
+                if admin_id == callback.from_user.id:
+                    continue
+
+                try:
+                    await bot.send_message(admin_id, notification_text_others)
+                except Exception as e:
+                    logging.warning(f"Не удалось отправить доп. уведомление админу {admin_id}: {e}")
         else:
             await bot.send_message(admin_id, admin_answer)
 
@@ -436,53 +475,84 @@ async def handle_telegram_webhook(request: web.Request):
 
 async def handle_bitrix_webhook(request: web.Request):
     """
-    !!! ЭТОТ ОБРАБОТЧИК ЛОВИТ ЗАПРОСЫ ОТ БИТРИКС24 !!!
-    Он проверяет секретный ключ и обновляет статусы в нашей БД.
+    !!! ВЕРСИЯ 3.0 (с пересмотром статуса) !!!
+    Этот обработчик ловит GET-параметры от робота
+    и корректно обрабатывает смену статуса (даже 'verified' -> 'rejected').
     """
     try:
-        # Битрикс шлет данные в 'application/x-www-form-urlencoded'
-        data = await request.post()
-        logging.info(f"Получен Bitrix-апдейт: {data}")
+        data = request.query
+        logging.info(f"Получен Bitrix-РОБОТ-апдейт (GET): {data}")
 
         # 1. Проверка безопасности
-        auth_token = data.get('auth[application_token]')
-        if auth_token != config.BITRIX_INCOMING_SECRET:
-            logging.warning("!!! Неверный токен от Битрикс !!!")
+        if data.get('secret') != config.BITRIX_INCOMING_SECRET:
+            logging.warning("!!! Неверный токен от Робота Битрикс !!!")
             return web.Response(status=403, text="Forbidden")
 
-        # 2. Проверяем тип события
-        event = data.get('event')
-        if event == 'ONCRMDEALUPDATE':
-            deal_id = int(data.get('data[FIELDS][ID]', 0))
-            new_stage_id = data.get('data[FIELDS][STAGE_ID]')  # e.g. "C1:WON"
+        # 2. Разбираем параметры
+        event_type = data.get('event_type')
+        status = data.get('status')  # 'verified', 'rejected' или 'pending' (если вернули)
+        deal_id = int(data.get('deal_id', 0))
+        user_id_from_b24_str = str(data.get('user_id', ''))
+        user_id = int(user_id_from_b24_str) if user_id_from_b24_str.isdigit() else None
 
-            if not deal_id or not new_stage_id:
-                logging.info("Недостаточно данных (нет ID или StageID) в апдейте.")
-                return web.Response(text="OK (no data)")
+        if not user_id:
+            logging.error(f"Ошибка от Робота: не пришел user_id для сделки {deal_id}.")
+            return web.Response(text="OK (no user_id)")
 
-            # 3. Находим, какому партнеру принадлежит эта сделка
-            partner_id = await db.get_partner_id_by_deal_id(deal_id)
+        # 3. Обрабатываем ивент верификации
+        if event_type == 'partner_verification':
+            logging.info(f"Получен статус '{status}' для партнера {user_id} (сделка {deal_id})")
 
-            # 4. Если сделка найдена в нашей БД (т.е. это Клиент, а не Партнер)
-            if partner_id:
-                logging.info(f"Обновляем сделку {deal_id} для партнера {partner_id}")
+            # Получаем ТЕКУЩИЙ статус из нашей БД
+            current_status = await db.get_partner_status(user_id)
 
-                # Обновляем статус в нашей локальной БД
-                await db.update_client_status_by_deal_id(deal_id, new_stage_id)
+            if not current_status:
+                logging.warning(f"Партнер {user_id} не найден в БД, хотя пришел апдейт.")
+                return web.Response(text="OK (partner not found)")
 
-                # Отправляем уведомление партнеру
-                # (Можно сделать более красиво, сопоставив new_stage_id с названием)
-                await bot.send_message(
-                    partner_id,
-                    f"ℹ️ Статус вашего клиента (сделка №{deal_id}) был обновлен до: {new_stage_id}"
-                )
+            # --- НОВАЯ ЛОГИКА ---
+            # Если статус в Битриксе отличается от статуса в БД, действуем.
+            if current_status != status:
+                logging.info(f"Статус партнера {user_id} меняется с '{current_status}' на '{status}'.")
+
+                # 1. Обновляем статус в нашей БД
+                await db.set_partner_status(user_id, status)
+
+                notification_text = ""
+                reply_markup = ReplyKeyboardRemove()
+
+                # 2. Готовим правильное сообщение
+                if status == 'verified':
+                    notification_text = VERIFIED_TEXT
+                    reply_markup = kb.get_verified_partner_menu()
+
+                elif status == 'rejected':
+                    if current_status == 'pending':
+                        notification_text = REJECTED_TEXT
+                    else:
+                        # Статус был 'verified', а стал 'rejected'
+                        notification_text = STATUS_REJECTED_REVOKED_TEXT
+
+                elif status == 'pending':
+                    # Статус был 'verified' или 'rejected', а стал 'pending'
+                    notification_text = STATUS_PENDING_REVOKED_TEXT
+
+                # 3. Уведомляем партнера
+                if notification_text:
+                    try:
+                        await bot.send_message(user_id, notification_text, reply_markup=reply_markup)
+                    except Exception as e:
+                        logging.warning(f"Не удалось уведомить партнера {user_id}: {e}")
+
             else:
-                logging.info(f"Сделка {deal_id} не найдена в БД партнеров (возможно, это сделка-партнер)")
+                logging.info(f"Партнер {user_id} уже имеет статус '{status}'. Игнорируем.")
+
+        # --- (Здесь будет логика для CLIENT_DEAL_UPDATE) ---
 
         return web.Response(text="OK")
 
     except Exception as e:
-        logging.error(f"Ошибка в обработчике Битрикс: {e}")
+        logging.error(f"Ошибка в обработке GET от Робота Битрикс: {e}")
         return web.Response(status=500, text="Server Error")
 
 
