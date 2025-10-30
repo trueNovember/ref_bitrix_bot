@@ -128,3 +128,15 @@ def get_clients_pagination_keyboard(current_offset: int, total_clients: int):
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
 
+def get_verified_partner_menu():
+    """
+    Возвращает главное меню для верифицированного партнера.
+    """
+    keyboard = [
+        [KeyboardButton(text="🚀 Отправить клиента")],
+        [KeyboardButton(text="📊 Мои клиенты")],
+        # === КНОПКА ТЕПЕРЬ ДЛЯ ВСЕХ ===
+        [KeyboardButton(text="ℹ️ Инфо Программа")]
+        # ==============================
+    ]
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)

@@ -42,6 +42,12 @@ async def init_db():
                 role TEXT NOT NULL CHECK(role IN ('junior', 'senior'))
             )
         ''')
+        await db.execute('''
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                ''')
         await db.commit()
 
 
@@ -194,3 +200,21 @@ async def count_clients_by_partner_id(partner_user_id: int):
         async with db.execute(query, (partner_user_id,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+async def get_setting(key: str, default: str = "") -> str:
+    """Получает значение настройки по ключу."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        query = "SELECT value FROM settings WHERE key = ?"
+        async with db.execute(query, (key,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else default
+
+async def set_setting(key: str, value: str):
+    """Устанавливает (или обновляет) значение настройки."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # INSERT OR REPLACE обновит запись, если ключ уже существует
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value)
+        )
+        await db.commit()

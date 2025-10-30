@@ -115,6 +115,20 @@ async def cmd_start(message: Message, state: FSMContext):
     else:
         await message.answer(WELCOME_TEXT, reply_markup=kb.get_agree_keyboard())
 
+@dp.message(F.text == "ℹ️ Инфо Программа")
+async def show_partnership_info_partner(message: Message):
+    """
+    Показывает партнеру актуальную информацию о программе из БД.
+    """
+    partner_id = message.from_user.id
+    status = await db.get_partner_status(partner_id)
+
+    if status != 'verified' and  partner_id not in await db.get_all_admin_ids() :
+        await message.answer("Эта функция доступна только верифицированным партнерам.")
+        return
+
+    info_text = await db.get_setting("partnership_info", "Информация о программе пока не заполнена.")
+    await message.answer(info_text)
 
 # --- 1. Процесс регистрации партнера ---
 
@@ -428,6 +442,25 @@ async def cmd_list_admins(message: Message):
 
     await message.answer(response)
 
+@dp.message(Command("setinfotext"), IsSeniorAdminFilter())
+async def cmd_set_info_text(message: Message):
+    """
+    Устанавливает новый текст для раздела 'Инфо Программа'. (Только Senior)
+    Использование: /setinfotext <весь текст информации>
+    Поддерживает HTML-разметку.
+    """
+    new_text = message.text[len("/setinfotext"):].strip()
+
+    if not new_text:
+        await message.answer("❌ Вы не указали текст.\n<b>Использование:</b> /setinfotext &lt;весь текст информации&gt;")
+        return
+
+    try:
+        await db.set_setting("partnership_info", new_text)
+        await message.answer("✅ Текст информации о программе успешно обновлен.")
+    except Exception as e:
+        logging.error(f"Ошибка при обновлении текста программы: {e}")
+        await message.answer(f"❌ Произошла ошибка при сохранении текста: {escape(str(e))}")
 
 async def process_partner_verification(
         admin_id: int,
@@ -694,7 +727,8 @@ async def handle_bitrix_webhook(request: web.Request):
                 # Собираем ID "важных" стадий из конфига
                 important_stages = [
                     get_client_stage_name(config.BITRIX_CLIENT_STAGE_2),  # "Назначена встреча"
-                    get_client_stage_name(config.BITRIX_CLIENT_STAGE_WIN)  # "Подписан договор"
+                    get_client_stage_name(config.BITRIX_CLIENT_STAGE_WIN),# "Подписан договор"
+                    get_client_stage_name(config.BITRIX_CLIENT_STAGE_LOSE)  #Сделка отменена
                 ]
                 # Проверяем, является ли новая стадия одной из "важных"
                 if new_stage_id in important_stages:
@@ -730,6 +764,20 @@ async def on_startup(app_instance: web.Application):
     """Выполняется при старте сервера."""
     await db.init_db()  # Инициализируем базу данных
     await db.add_admin(config.SUPER_ADMIN_ID, "SUPER_ADMIN", "senior")
+    default_info_text = """
+    <b>ℹ️ Информация о Партнерской Программе</b>
+
+    Здесь будет текст с актуальной информацией о программе:
+    - Условия вознаграждения партнеров (% ставки, бонусы).
+    - Процесс выплат.
+    - Требования к партнерам.
+    - Контакты ответственного менеджера.
+
+    <i>(Старший администратор может изменить этот текст командой /setinfotext)</i>
+        """
+    current_info = await db.get_setting("partnership_info")
+    if not current_info:
+        await db.set_setting("partnership_info", default_info_text.strip())
     # Устанавливаем вебхук для Telegram
     webhook_url = config.BASE_WEBHOOK_URL + config.TELEGRAM_WEBHOOK_PATH
     await bot.set_webhook(
