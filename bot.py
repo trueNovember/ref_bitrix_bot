@@ -163,11 +163,12 @@ async def process_phone(message: Message, state: FSMContext):
     user_id = message.from_user.id
     data = await state.get_data()
     full_name = data.get('full_name')
+    username = message.from_user.username
 
     await state.clear()
 
     # 1. Сначала отправляем в Битрикс, чтобы получить deal_id
-    deal_id = await bitrix_api.create_partner_deal(full_name, phone_number, user_id)
+    deal_id = await bitrix_api.create_partner_deal(full_name, phone_number, user_id, username)
 
     if deal_id:
         # 2. Если успешно, сохраняем в локальную БД

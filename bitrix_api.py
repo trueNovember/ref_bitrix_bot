@@ -8,14 +8,15 @@ from config import (
     PARTNER_FUNNEL_ID,  # ID воронки 11
     PARTNER_DEAL_TG_ID_FIELD,
     BITRIX_CLIENT_FUNNEL_ID,
-    PARTNER_DEAL_FIELD
+    PARTNER_DEAL_FIELD,
+    PARTNER_DEAL_TG_USERNAME_FIELD
 )
 
 
 # (Опционально)
 # from config import PARTNER_DEAL_TG_ID_FIELD
 
-async def create_partner_deal(full_name: str, phone: str, user_id: int):
+async def create_partner_deal(full_name: str, phone: str, user_id: int, username: str = None):
     """
     Отправляет Сделку 'Партнер на верификацию' в Битрикс (в воронку 11).
     Использует aiohttp.
@@ -35,6 +36,9 @@ async def create_partner_deal(full_name: str, phone: str, user_id: int):
     # Добавляем TG ID, если он указан в конфиге
     if PARTNER_DEAL_TG_ID_FIELD:
         deal_fields[PARTNER_DEAL_TG_ID_FIELD] = user_id
+    if PARTNER_DEAL_TG_USERNAME_FIELD and username:
+        # Добавляем @, чтобы в Битриксе было удобнее
+        deal_fields[PARTNER_DEAL_TG_USERNAME_FIELD] = f"@{username}"
 
     contact_params = {
         'fields': {
