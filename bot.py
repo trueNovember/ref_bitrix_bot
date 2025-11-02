@@ -832,27 +832,30 @@ async def on_shutdown(app_instance: web.Application):
 
 
 def main():
-    """Главная функция запуска."""
-
-    # Регистрируем обработчик для Telegram
-    app.router.add_post(
-        config.TELEGRAM_WEBHOOK_PATH,
-        handle_telegram_webhook
+    telegram_webhook_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        # (Опционально) Можете передать ваш секрет, если хотите доп. проверку
+        # secret_token=config.YOUR_SECRET_TOKEN
     )
 
-    # Регистрируем обработчик для Битрикс
+    # 2. Регистрируем этого "слушателя" на ЛЮБОЙ метод
+    app.router.add_route(
+        "*", # Ловить и GET (для проверки) и POST (для апдейтов)
+        config.TELEGRAM_WEBHOOK_PATH,
+        telegram_webhook_handler # Передаем сюда обработчик aiogram
+    )
+
+    # 3. Регистрируем обработчик для Битрикс (остается без изменений)
     app.router.add_post(
         config.BITRIX_WEBHOOK_PATH,
         handle_bitrix_webhook
     )
+    # ======================
 
     # Добавляем функции старта/остановки
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
-
-    # Передаем aiogram-диспетчер в приложение (для обработчика)
-    app['bot'] = bot
-    app['dispatcher'] = dp
 
     logging.info(f"Запуск веб-сервера на {config.WEB_SERVER_HOST}:{config.WEB_SERVER_PORT}")
     web.run_app(
