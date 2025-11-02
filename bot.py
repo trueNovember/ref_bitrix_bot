@@ -668,21 +668,35 @@ async def paginate_clients(callback: CallbackQuery, state: FSMContext):
 # === ОБРАБОТЧИКИ AIOHTTP (Сервер) ================================
 # =================================================================
 
-async def handle_telegram_webhook(request: web.Request):
+async def handle_telegram_GET(request: web.Request):
     """
-    Этот обработчик ловит запросы от TELEGRAM.
-    Он передает их в aiogram Dispatcher.
+    ОТЛАДЧИК: Ловит GET-запрос (проверку) от Telegram.
+    Всегда отвечает 200 OK.
     """
-    url = str(request.url)
-    logging.info(f"Получен Telegram-апдейт: {url}")
+    logging.info("!!! ПОЛУЧЕН GET-ЗАПРОС (ПРОВЕРКА) ОТ TELEGRAM !!!")
+    return web.Response(text="OK")
 
-    # Создаем объект SimpleRequestHandler и вызываем его
-    handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
-    response = await handler.handle(request)
-    return response
+
+async def handle_telegram_POST(request: web.Request):
+    """
+    Ловит POST-запрос (сообщения) от Telegram и передает в aiogram.
+    """
+    logging.info("!!! ПОЛУЧЕН POST-ЗАПРОС (СООБЩЕНИЕ) ОТ TELEGRAM !!!")
+
+    # Проверяем, что запрос пришел от Telegram (опционально, но рекомендуется)
+    # if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != config.YOUR_SECRET_TOKEN:
+    #     return web.Response(status=403, text="Forbidden")
+
+    try:
+        data = await request.json()
+
+        # "Ска-рмливаем" обновление aiogram-диспетчеру
+        await dp.feed_webhook_update(bot, data)
+
+        return web.Response(text="OK")
+    except Exception as e:
+        logging.error(f"Ошибка обработки POST-запроса от Telegram: {e}")
+        return web.Response(status=500, text="Server Error")
 
 
 async def handle_bitrix_webhook(request: web.Request):
@@ -832,18 +846,18 @@ async def on_shutdown(app_instance: web.Application):
 
 
 def main():
-    telegram_webhook_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-        # (Опционально) Можете передать ваш секрет, если хотите доп. проверку
-        # secret_token=config.YOUR_SECRET_TOKEN
+    """Главная функция запуска."""
+
+    # 1. Регистрируем обработчик для GET-запросов (проверка)
+    app.router.add_get(
+        config.TELEGRAM_WEBHOOK_PATH,
+        handle_telegram_GET
     )
 
-    # 2. Регистрируем этого "слушателя" на ЛЮБОЙ метод
-    app.router.add_route(
-        "*", # Ловить и GET (для проверки) и POST (для апдейтов)
+    # 2. Регистрируем обработчик для POST-запросов (сообщения)
+    app.router.add_post(
         config.TELEGRAM_WEBHOOK_PATH,
-        telegram_webhook_handler # Передаем сюда обработчик aiogram
+        handle_telegram_POST
     )
 
     # 3. Регистрируем обработчик для Битрикс (остается без изменений)
