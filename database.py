@@ -1,7 +1,7 @@
 # database.py
 import aiosqlite
 
-DB_NAME = 'partners.db'
+DB_NAME = 'data/partners.db'
 
 
 async def init_db():
