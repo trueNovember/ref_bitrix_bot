@@ -140,3 +140,16 @@ def get_verified_partner_menu():
         # ==============================
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def get_skip_keyboard():
+    """
+    Возвращает кнопки 'Пропустить' и 'Отмена'.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➡️ Пропустить")],
+            [KeyboardButton(text="❌ Отмена")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )

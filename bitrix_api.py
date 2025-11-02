@@ -89,11 +89,7 @@ async def create_partner_deal(full_name: str, phone: str, user_id: int):
         return None  # <-- Исправлено на None
 
 
-async def create_client_deal(client_name: str, client_phone: str, client_address: str, partner_name: str):
-    """
-    Отправляет сделку 'Новый клиент' в Битрикс (в воронку КЛИЕНТОВ).
-    Возвращает ID созданной сделки (deal_id) или None.
-    """
+async def create_client_deal(client_name: str, client_phone: str, client_address: str, partner_name: str, client_comment: str = None):
     # Используем ВЕБХУК №2 (для клиентов)
     url_deal_add = BITRIX_CLIENT_WEBHOOK + "crm.deal.add.json"
     url_contact_add = BITRIX_CLIENT_WEBHOOK + "crm.contact.add.json"
@@ -102,14 +98,27 @@ async def create_client_deal(client_name: str, client_phone: str, client_address
 
     deal_fields = {
         'TITLE': deal_title,
-        'SOURCE_ID': 'PARTNER_BOT_LEAD',
 
-        # === НОВЫЕ ПОЛЯ ===
+        # === ИЗМЕНЕНИЯ ЗДЕСЬ ===
+
+        # 1. Поле "Источник" (базовое)
+        # Устанавливаем, как вы и просили - "Рефералка"
+        'SOURCE_ID': 'UC_Y0AEV3',
+
+        # 2. Поле "Сквозная аналитика" (UTM)
+        'utm_source': 'ref',
+
+        # 3. Поле "Дополнительно об источнике"
+        'SOURCE_DESCRIPTION': f"Партнер {partner_name}",
+
+        # === ОБЯЗАТЕЛЬНЫЕ ПОЛЯ (из config.py) ===
         'CATEGORY_ID': BITRIX_CLIENT_FUNNEL_ID,  # Указываем нужную воронку
         PARTNER_DEAL_FIELD: partner_name,  # Поле, где хранится ФИО партнера
         'STAGE_ID': 'C11:UC_JVUM2G'
-        # ==================
+        # ==============================================
     }
+    if client_comment:
+        deal_fields['COMMENTS'] = client_comment
 
     contact_params = {
         'fields': {

@@ -271,24 +271,55 @@ async def client_phone_received(message: Message, state: FSMContext):
 @dp.message(ClientSubmission.waiting_for_client_address)
 async def client_address_received(message: Message, state: FSMContext):
     """
-    Получили адрес, показываем данные для подтверждения.
+    Получили адрес, спрашиваем комментарий.
     """
     # Сохраняем адрес в FSM
     await state.update_data(client_address=message.text)
+
+    # Спрашиваем комментарий и показываем новую клавиатуру
+    await message.answer(
+        "✅ Адрес принят. Теперь введите комментарий.\n\n"
+        "Если комментария нет, нажмите 'Пропустить'.",
+        reply_markup=kb.get_skip_keyboard() # <-- Новая клавиатура
+    )
+    # Переводим в новое состояние
+    await state.set_state(ClientSubmission.waiting_for_client_comment)
+
+
+@dp.message(ClientSubmission.waiting_for_client_comment, F.text)
+async def client_comment_received(message: Message, state: FSMContext):
+    """
+    Получили комментарий (или 'Пропустить'), показываем подтверждение.
+    """
+    comment_text = None
+    # Проверяем, что это не команда 'Пропустить'
+    if message.text != "➡️ Пропустить":
+        comment_text = message.text
+
+    # Сохраняем комментарий (или None) в FSM
+    await state.update_data(client_comment=comment_text)
+
+    # --- Теперь делаем то, что раньше делала 'client_address_received' ---
+
     # Получаем все данные из FSM
     data = await state.get_data()
     client_name = data.get('client_name')
     client_phone = data.get('client_phone')
     client_address = data.get('client_address')
 
+    # Форматируем отображение комментария
+    comment_display = escape(comment_text) if comment_text else "<i>(нет)</i>"
+
     # Формируем сообщение для подтверждения
     confirmation_text = (
         f"<b>Проверьте данные клиента:</b>\n\n"
         f"<b>ФИО:</b> {escape(client_name)}\n"
         f"<b>Телефон:</b> {escape(client_phone)}\n"
-        f"<b>Адрес:</b> {escape(client_address)}\n\n"
+        f"<b>Адрес:</b> {escape(client_address)}\n"
+        f"<b>Комментарий:</b> {comment_display}\n\n"  # <-- Новое поле
         f"Все верно?"
     )
+
     # Отправляем сообщение с кнопками
     await message.answer(
         confirmation_text,
@@ -309,18 +340,20 @@ async def confirm_client_submission(callback: CallbackQuery, state: FSMContext):
     client_name = data.get('client_name')
     client_phone = data.get('client_phone')
     client_address = data.get('client_address')
+    client_comment = data.get('client_comment')
     partner_name = partner_data.get('full_name')
 
     await state.clear()
 
     # Убираем кнопки из сообщения
-    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.edit_text(
+        callback.message.text.replace("\n\nВсе верно?", "\n\n<i>Отправка...</i>"),
+        reply_markup=None)
 
     # Отправляем в Битрикс
     deal_id = await bitrix_api.create_client_deal(
-        client_name, client_phone, client_address, partner_name
-    )
-
+        client_name, client_phone, client_address, partner_name,
+        client_comment = client_comment)
     if deal_id:
         await db.add_client(partner_id, deal_id, client_name)
         await callback.message.answer(
@@ -784,12 +817,16 @@ async def handle_bitrix_webhook(request: web.Request):
                 # Проверяем, является ли новая стадия одной из "важных"
                 if new_stage_id in important_stages:
                     try:
-                        await bot.send_message(
-                            partner_id,
-                            f"ℹ️ Статус вашего клиента <b>{escape(client_name)}</b> был обновлен.\n<b>Новый этап:</b> {stage_name}"
-                        )
-                        logging.info(
-                            f"Партнеру {partner_id} отправлено уведомление о стадии '{stage_name}' (сделка {deal_id}).")
+                        if new_stage_id == get_client_stage_name(config.BITRIX_CLIENT_STAGE_WIN):
+                            await bot.send_message(partner_id,
+                                                  f"✅ С клиентом <b>{escape(client_name)}</b> заключен договор. В ближайшее время мы свяжемся с вами для произведения выплаты")
+                        else:
+                            await bot.send_message(
+                                partner_id,
+                                f"ℹ️ Статус вашего клиента <b>{escape(client_name)}</b> был обновлен.\n<b>Новый этап:</b> {stage_name}"
+                            )
+                            logging.info(
+                                f"Партнеру {partner_id} отправлено уведомление о стадии '{stage_name}' (сделка {deal_id}).")
                     except Exception as e:
                         logging.warning(f"Не удалось уведомить партнера {partner_id} о сделке {deal_id}: {e}")
                 else:
