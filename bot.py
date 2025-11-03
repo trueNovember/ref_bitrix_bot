@@ -27,19 +27,7 @@ dp = Dispatcher()
 app = web.Application()
 
 # --- Тексты бота ---
-WELCOME_TEXT = """
-Здравствуйте! 🤝
 
-Это бот партнерской системы компании [Название Компании].
-Мы предлагаем дизайнерам и риэлторам выгодное сотрудничество.
-
-<b>Условия:</b>
-1. Вы регистрируетесь в системе.
-2. Менеджер связывается с вами для верификации (ваша заявка попадет в воронку).
-3. После верификации вы получаете доступ к отправке заявок.
-
-Нажимая "Я согласен", вы принимаете условия обработки персональных данных.
-"""
 PENDING_VERIFICATION_TEXT = "⏳ Ваша заявка на верификацию принята. Она попала в нашу воронку. Менеджер свяжется с вами в ближайшее рабочее время."
 VERIFIED_TEXT = "✅ Вы верифицированный партнер. Теперь вы можете отправлять нам клиентов!"
 REJECTED_TEXT = "❌ К сожалению, ваша заявка на партнерство была отклонена."
@@ -113,7 +101,8 @@ async def cmd_start(message: Message, state: FSMContext):
     elif status == 'rejected':
         await message.answer(REJECTED_TEXT, reply_markup=ReplyKeyboardRemove())
     else:
-        await message.answer(WELCOME_TEXT, reply_markup=kb.get_agree_keyboard())
+        welcome_text = await db.get_setting("welcome_text", "Здравствуйте! Ошибка загрузки текста.")
+        await message.answer(welcome_text, reply_markup=kb.get_agree_keyboard())
 
 @dp.message(F.text == "ℹ️ Инфо Программа")
 async def show_partnership_info_partner(message: Message):
@@ -513,24 +502,59 @@ async def cmd_list_admins(message: Message):
 
     await message.answer(response)
 
+
 @dp.message(Command("setinfotext"), IsSeniorAdminFilter())
 async def cmd_set_info_text(message: Message):
     """
-    Устанавливает новый текст для раздела 'Инфо Программа'. (Только Senior)
-    Использование: /setinfotext <весь текст информации>
-    Поддерживает HTML-разметку.
+    Устанавливает новый текст для разделов. (Только Senior)
+    Использование:
+    /setinfotext info <весь текст информации>
+    /setinfotext welcome <весь текст приветствия>
     """
-    new_text = message.text[len("/setinfotext"):].strip()
+    usage_text = (
+        "❌ <b>Неверное использование.</b>\n"
+        "<b>Примеры:</b>\n"
+        "<code>/setinfotext info &lt;текст для 'Инфо Программа'&gt;</code>\n"
+        "<code>/setinfotext welcome &lt;текст для /start&gt;</code>"
+    )
 
-    if not new_text:
-        await message.answer("❌ Вы не указали текст.\n<b>Использование:</b> /setinfotext &lt;весь текст информации&gt;")
+    # Убираем /setinfotext
+    command_args = message.text[len("/setinfotext"):].strip()
+
+    if not command_args:
+        await message.answer(usage_text)
         return
 
+    # Делим по первому пробелу, чтобы отделить (тип) от (текста)
     try:
-        await db.set_setting("partnership_info", new_text)
-        await message.answer("✅ Текст информации о программе успешно обновлен.")
+        text_type, new_text = command_args.split(maxsplit=1)
+        text_type = text_type.lower()  # 'info' или 'welcome'
+        new_text = new_text.strip()
+
+        # Если текст после 'info' или 'welcome' пустой
+        if not new_text:
+            raise ValueError("No text provided")
+
+    except ValueError:
+        await message.answer(usage_text)
+        return
+
+    # Выбираем, что обновлять
+    try:
+        if text_type == 'info':
+            await db.set_setting("partnership_info", new_text)
+            await message.answer("✅ Текст 'Инфо Программа' успешно обновлен.")
+
+        elif text_type == 'welcome':
+            await db.set_setting("welcome_text", new_text)
+            await message.answer("✅ Текст 'Приветствие' (для /start) успешно обновлен.")
+
+        else:
+            # Если ввели /setinfotext
+            await message.answer(usage_text)
+
     except Exception as e:
-        logging.error(f"Ошибка при обновлении текста программы: {e}")
+        logging.error(f"Ошибка при обновлении текста ({text_type}): {e}")
         await message.answer(f"❌ Произошла ошибка при сохранении текста: {escape(str(e))}")
 
 async def process_partner_verification(
@@ -867,6 +891,23 @@ async def on_startup(app_instance: web.Application):
     current_info = await db.get_setting("partnership_info")
     if not current_info:
         await db.set_setting("partnership_info", default_info_text.strip())
+    DEFAULT_WELCOME_TEXT = """
+    Здравствуйте! 🤝
+
+    Это бот партнерской системы компании [Название Компании].
+    Мы предлагаем дизайнерам и риэлторам выгодное сотрудничество.
+
+    <b>Условия:</b>
+    1. Вы регистрируетесь в системе.
+    2. Менеджер связывается с вами для верификации (ваша заявка попадет в воронку).
+    3. После верификации вы получаете доступ к отправке заявок.
+
+    Нажимая "Я согласен", вы принимаете условия обработки персональных данных.
+    <i>(Админ может изменить этот текст: /setinfotext welcome)</i>
+    """
+    current_welcome = await db.get_setting("welcome_text")
+    if not current_welcome:
+        await db.set_setting("welcome_text", DEFAULT_WELCOME_TEXT.strip())
     # Устанавливаем вебхук для Telegram
     webhook_url = config.BASE_WEBHOOK_URL + config.TELEGRAM_WEBHOOK_PATH
     await bot.set_webhook(
