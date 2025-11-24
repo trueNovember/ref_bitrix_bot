@@ -487,62 +487,57 @@ async def handle_telegram_POST(request: web.Request):
 
 async def handle_bitrix_webhook(request: web.Request):
     try:
-        # 1. Логируем все параметры запроса (GET query)
-        # Битрикс присылает данные в URL (query params), а не в body
-        data = dict(request.query)
-        logging.info(f"📥 [BITRIX RAW QUERY]: {data}")
-
-        # Проверка секрета
+        data = request.query
         if data.get('secret') != config.BITRIX_INCOMING_SECRET:
-            logging.warning(f"⛔ Неверный секрет! Получено: {data.get('secret')}")
             return web.Response(status=403, text="Forbidden")
 
         evt = data.get('event_type')
-        status = data.get('status')
+
+        # === ВОТ ЗДЕСЬ ИЗМЕНЕНИЕ ===
+        # Проверяем STAGE_ID, если нет - берем status
+        status_or_stage_id = data.get('STAGE_ID') or data.get('status')
+        # ===========================
+
         did = int(data.get('deal_id', 0))
         uid = int(data.get('user_id', 0))
 
-        logging.info(f"🔎 Обработка события: {evt} | Deal: {did} | User: {uid} | Status: {status}")
-
         if evt == 'partner_verification' and uid:
-            logging.info(f"👤 Проверка партнера {uid}...")
             cur = await db.get_partner_status(uid)
-            logging.info(f"   Текущий статус: {cur}, Новый: {status}")
-
-            if cur != status:
-                await process_partner_verification(0, uid, status)  # 0 = system
-            else:
-                logging.info("   Статусы совпадают, пропускаем.")
+            if cur != status_or_stage_id:
+                await process_partner_verification(0, uid, status_or_stage_id)  # 0 = system
 
         elif evt == 'client_deal_update':
-            logging.info(f"💼 Обновление клиента (сделка {did})...")
             pid, cname = await db.get_partner_and_client_by_deal_id(did)
-
             if pid:
-                logging.info(f"   Партнер найден: {pid}, Клиент: {cname}")
                 ddata = await bitrix_api.get_deal(did)
-
-                # Логируем, что вернул API Битрикса по сделке
-                logging.info(f"   Данные сделки из API: {ddata}")
-
                 opp = float(ddata.get('OPPORTUNITY', 0)) if ddata else 0
-                sname = get_client_stage_name(status)
 
+                # Используем полученный ID стадии
+                sname = get_client_stage_name(status_or_stage_id)
                 await db.update_client_status_and_payout(did, sname, opp)
 
-                if status == config.BITRIX_CLIENT_STAGE_WIN:
+                # Сравниваем с константами (которые должны быть ID стадий)
+                if status_or_stage_id == config.BITRIX_CLIENT_STAGE_WIN:
                     await bot.send_message(pid, f"✅ С клиентом <b>{escape(cname)}</b> договор! Сумма: {opp:,.0f}")
-                elif status == config.BITRIX_CLIENT_STAGE_LOSE:
+                elif status_or_stage_id == config.BITRIX_CLIENT_STAGE_LOSE:
                     await bot.send_message(pid, f"❌ Клиент <b>{escape(cname)}</b> отказ.")
-                elif status == config.BITRIX_CLIENT_STAGE_2:
+                elif status_or_stage_id == config.BITRIX_CLIENT_STAGE_2:
                     await bot.send_message(pid, f"ℹ️ Встреча с клиентом <b>{escape(cname)}</b>.")
-            else:
-                logging.warning(f"⚠️ Сделка {did} не найдена в таблице clients!")
 
         return web.Response(text="OK")
     except Exception as e:
-        logging.error(f"❌ Bitrix webhook error: {e}", exc_info=True)
+        logging.error(f"Bitrix webhook error: {e}")
         return web.Response(status=500)
+
+
+async def on_startup(app):
+    await db.init_db()
+    await db.add_admin(config.SUPER_ADMIN_ID, "SUPER", "senior")
+    if not await db.get_setting("partnership_info"): await db.set_setting("partnership_info", "Инфо...")
+    if not await db.get_setting("welcome_text"): await db.set_setting("welcome_text", "Приветствие...")
+
+    url = config.BASE_WEBHOOK_URL + config.TELEGRAM_WEBHOOK_PATH
+    await bot.set_webhook(url=url, secret_token=config.BITRIX_INCOMING_SECRET)
 
 
 async def on_startup(app):
