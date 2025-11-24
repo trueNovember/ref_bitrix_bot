@@ -495,7 +495,7 @@ async def handle_bitrix_webhook(request: web.Request):
         status = data.get('status')
         did = int(data.get('deal_id', 0))
         uid = int(data.get('user_id', 0))
-
+        print(evt, status, did)
         if evt == 'partner_verification' and uid:
             cur = await db.get_partner_status(uid)
             if cur != status:
