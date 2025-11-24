@@ -2,43 +2,58 @@
 import aiohttp
 import traceback
 from config import (
-    BITRIX_PARTNER_WEBHOOK,
-    BITRIX_CLIENT_WEBHOOK,
-    PARTNER_DEAL_FIELD,
-    PARTNER_FUNNEL_ID,  # ID воронки 11
-    PARTNER_DEAL_TG_ID_FIELD,
-    BITRIX_CLIENT_FUNNEL_ID,
-    PARTNER_DEAL_FIELD,
-    PARTNER_DEAL_TG_USERNAME_FIELD
+    BITRIX_PARTNER_WEBHOOK, BITRIX_CLIENT_WEBHOOK,
+    PARTNER_FUNNEL_ID, PARTNER_DEAL_TG_ID_FIELD, PARTNER_DEAL_TG_USERNAME_FIELD,
+    BITRIX_CLIENT_FUNNEL_ID, PARTNER_DEAL_FIELD,
+    PARTNER_ROLE_FIELD, CLIENT_AREA_FIELD, CLIENT_ADDRESS_DEAL_FIELD
 )
 
 
-# (Опционально)
-# from config import PARTNER_DEAL_TG_ID_FIELD
+async def check_contact_exists_by_phone(phone: str):
+    """
+    Проверяет, есть ли контакт с таким телефоном в базе CRM.
+    Возвращает ID контакта или None.
+    """
+    url = BITRIX_CLIENT_WEBHOOK + "crm.contact.list.json"
+    # Ищем контакт, у которого телефон совпадает
+    params = {
+        'filter': {'PHONE': phone},
+        'select': ['ID', 'NAME', 'LAST_NAME']
+    }
 
-async def create_partner_deal(full_name: str, phone: str, user_id: int, username: str = None):
-    """
-    Отправляет Сделку 'Партнер на верификацию' в Битрикс (в воронку 11).
-    Использует aiohttp.
-    !!! ИСПРАВЛЕННАЯ ВЕРСИЯ: Возвращает deal_id, а не True !!!
-    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=params) as response:
+                result = await response.json()
+                if 'result' in result and len(result['result']) > 0:
+                    # Контакт найден
+                    contact = result['result'][0]
+                    return contact['ID']
+                return None
+    except Exception as e:
+        print(f"Error checking contact: {e}")
+        return None
+
+
+async def create_partner_deal(full_name: str, phone: str, user_id: int, username: str = None, role: str = None):
+    """Создает сделку партнера (верификация)."""
     url_deal_add = BITRIX_PARTNER_WEBHOOK + "crm.deal.add.json"
     url_contact_add = BITRIX_PARTNER_WEBHOOK + "crm.contact.add.json"
 
     deal_title = f"Новый партнер (бот): {full_name}"
-
     deal_fields = {
         'TITLE': deal_title,
-        'CATEGORY_ID': PARTNER_FUNNEL_ID,  # Воронка 11
+        'CATEGORY_ID': PARTNER_FUNNEL_ID,
         'SOURCE_ID': 'PARTNER_BOT',
     }
 
-    # Добавляем TG ID, если он указан в конфиге
     if PARTNER_DEAL_TG_ID_FIELD:
         deal_fields[PARTNER_DEAL_TG_ID_FIELD] = user_id
     if PARTNER_DEAL_TG_USERNAME_FIELD and username:
-        # Добавляем @, чтобы в Битриксе было удобнее
         deal_fields[PARTNER_DEAL_TG_USERNAME_FIELD] = f"@{username}"
+    # Передаем Роль
+    if PARTNER_ROLE_FIELD and role:
+        deal_fields[PARTNER_ROLE_FIELD] = role
 
     contact_params = {
         'fields': {
@@ -49,52 +64,24 @@ async def create_partner_deal(full_name: str, phone: str, user_id: int, username
 
     try:
         async with aiohttp.ClientSession() as session:
-            # 1. Создаем контакт
             async with session.post(url_contact_add, json=contact_params) as contact_response:
-                contact_response.raise_for_status()  # Проверка на 4xx/5xx
-                contact_data = await contact_response.json()
-                contact_id = contact_data.get('result')
+                contact_id = (await contact_response.json()).get('result')
 
-            # 2. Создаем сделку и привязываем контакт
             if contact_id:
                 deal_fields['CONTACT_ID'] = contact_id
 
-            deal_params = {'fields': deal_fields}
+            async with session.post(url_deal_add, json={'fields': deal_fields}) as deal_response:
+                deal_id = (await deal_response.json()).get('result')
+                return deal_id
 
-            async with session.post(url_deal_add, json=deal_params) as deal_response:
-                deal_response.raise_for_status()
-                deal_data = await deal_response.json()
-
-                # === ВОТ ИСПРАВЛЕНИЕ ===
-                deal_id = deal_data.get('result')
-                if deal_id:
-                    print(f"Partner deal created, ID: {deal_id}")
-                    return deal_id  # <-- Возвращаем ID
-                else:
-                    print(f"Error: Partner deal created but no ID returned. {deal_data}")
-                    return None  # <-- Возвращаем None
-                # ========================
-
-    except aiohttp.ClientResponseError as e:
-        # Ошибка HTTP (4xx, 5xx)
-        print(f"HTTP error creating partner deal: {e.status} - {e.message}")
-        print(f"Response: {await e.text()}")
-        return None  # <-- Исправлено на None
-    except aiohttp.ClientConnectorError as e:
-        # Ошибка соединения
-        print(f"Connection error creating partner deal: {e}")
-        return None  # <-- Исправлено на None
     except Exception as e:
-        # Другие ошибки
-        print("--- ПОЛНАЯ ОШИБКА В create_partner_deal ---")
-        print(traceback.format_exc())
-        print("------------------------------------------")
         print(f"Error creating partner deal: {e}")
-        return None  # <-- Исправлено на None
+        return None
 
 
-async def create_client_deal(client_name: str, client_phone: str, client_address: str, partner_name: str, client_comment: str = None):
-    # Используем ВЕБХУК №2 (для клиентов)
+async def create_client_deal(client_name: str, client_phone: str, client_address: str, partner_name: str,
+                             client_comment: str = None, client_area: str = None):
+    """Создает сделку клиента (лид от партнера)."""
     url_deal_add = BITRIX_CLIENT_WEBHOOK + "crm.deal.add.json"
     url_contact_add = BITRIX_CLIENT_WEBHOOK + "crm.contact.add.json"
 
@@ -102,27 +89,24 @@ async def create_client_deal(client_name: str, client_phone: str, client_address
 
     deal_fields = {
         'TITLE': deal_title,
-
-        # === ИЗМЕНЕНИЯ ЗДЕСЬ ===
-
-        # 1. Поле "Источник" (базовое)
-        # Устанавливаем, как вы и просили - "Рефералка"
         'SOURCE_ID': 'UC_Y0AEV3',
-
-        # 2. Поле "Сквозная аналитика" (UTM)
         'utm_source': 'ref',
-
-        # 3. Поле "Дополнительно об источнике"
         'SOURCE_DESCRIPTION': f"Партнер {partner_name}",
-
-        # === ОБЯЗАТЕЛЬНЫЕ ПОЛЯ (из config.py) ===
-        'CATEGORY_ID': BITRIX_CLIENT_FUNNEL_ID,  # Указываем нужную воронку
-        PARTNER_DEAL_FIELD: partner_name,  # Поле, где хранится ФИО партнера
+        'CATEGORY_ID': BITRIX_CLIENT_FUNNEL_ID,
+        PARTNER_DEAL_FIELD: partner_name,
         'STAGE_ID': 'C11:UC_JVUM2G'
-        # ==============================================
     }
+
     if client_comment:
         deal_fields['COMMENTS'] = client_comment
+
+    # Передаем площадь
+    if CLIENT_AREA_FIELD and client_area:
+        deal_fields[CLIENT_AREA_FIELD] = client_area
+
+    # Передаем адрес в поле сделки
+    if CLIENT_ADDRESS_DEAL_FIELD and client_address:
+        deal_fields[CLIENT_ADDRESS_DEAL_FIELD] = client_address
 
     contact_params = {
         'fields': {
@@ -134,73 +118,74 @@ async def create_client_deal(client_name: str, client_phone: str, client_address
 
     try:
         async with aiohttp.ClientSession() as session:
-            # 1. Создаем контакт
             async with session.post(url_contact_add, json=contact_params) as contact_response:
-                contact_response.raise_for_status()
-                contact_data = await contact_response.json()
-                contact_id = contact_data.get('result')
+                contact_id = (await contact_response.json()).get('result')
 
-            # 2. Создаем сделку и привязываем контакт
             if contact_id:
                 deal_fields['CONTACT_ID'] = contact_id
 
-            deal_params = {'fields': deal_fields}
+            async with session.post(url_deal_add, json={'fields': deal_fields}) as deal_response:
+                deal_id = (await deal_response.json()).get('result')
+                return deal_id
 
-            async with session.post(url_deal_add, json=deal_params) as deal_response:
-                deal_response.raise_for_status()
-                deal_data = await deal_response.json()
-
-                deal_id = deal_data.get('result')
-                if deal_id:
-                    print(f"Client deal created, ID: {deal_id}")
-                    return deal_id  # Возвращаем ID
-                else:
-                    print(f"Error: Client deal created but no ID returned. {deal_data}")
-                    return None
-
-
-    except aiohttp.ClientResponseError as e:
-        print(f"HTTP error creating client deal: {e.status} - {e.message}")
-        # We removed the problematic line. The status and message are enough.
-        return None
-    except aiohttp.ClientConnectorError as e:
-        print(f"Connection error creating client deal: {e}")
-        return None
     except Exception as e:
-        print("--- ПОЛНАЯ ОШИБКА В create_client_deal ---")
-        print(traceback.format_exc())
-        print("------------------------------------------")
         print(f"Error creating client deal: {e}")
         return None
 
 
-async def move_deal_stage(deal_id: int, stage_id: str):
+async def create_duplicate_alert_deal(client_name: str, client_phone: str, partner_name: str):
     """
-    Передвигает сделку на новый этап (stage_id).
-    Использует ВЕБХУК №1 (для партнеров), т.к. мы двигаем Сделку-Партнера.
+    Создает сделку в ВОРОНКЕ ПАРТНЕРОВ для менеджера,
+    если найден дубль клиента.
     """
-    url_deal_update = BITRIX_PARTNER_WEBHOOK + "crm.deal.update.json"
+    url_deal_add = BITRIX_PARTNER_WEBHOOK + "crm.deal.add.json"
 
-    params = {
-        'id': deal_id,
-        'fields': {
-            'STAGE_ID': stage_id
-        }
+    deal_title = f"ДУБЛЬ КЛИЕНТА от {partner_name}"
+    description = (
+        f"Партнер {partner_name} пытался передать клиента, который уже есть в базе.\n"
+        f"Клиент: {client_name}\n"
+        f"Телефон: {client_phone}\n\n"
+        "Свяжитесь с партнером и проясните ситуацию."
+    )
+
+    deal_fields = {
+        'TITLE': deal_title,
+        'CATEGORY_ID': PARTNER_FUNNEL_ID,  # Воронка партнеров (11)
+        'COMMENTS': description,
+        'SOURCE_ID': 'PARTNER_BOT'
     }
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url_deal_update, json=params) as response:
-                response.raise_for_status()
-                result = await response.json()
-
-                if 'result' in result:
-                    print(f"Сделка {deal_id} успешно передвинута на этап {stage_id}.")
-                    return True
-                else:
-                    print(f"Ошибка при обновлении сделки {deal_id}: {result}")
-                    return False
-
+            async with session.post(url_deal_add, json={'fields': deal_fields}) as response:
+                return (await response.json()).get('result')
     except Exception as e:
-        print(f"Критическая ошибка в move_deal_stage: {e}")
+        print(f"Error creating duplicate alert: {e}")
+        return None
+
+
+async def get_deal(deal_id: int):
+    """Получает данные о сделке (чтобы узнать актуальную сумму)."""
+    url = BITRIX_CLIENT_WEBHOOK + "crm.deal.get.json"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={'id': deal_id}) as response:
+                data = await response.json()
+                if 'result' in data:
+                    return data['result']
+                return None
+    except Exception as e:
+        print(f"Error getting deal: {e}")
+        return None
+
+
+async def move_deal_stage(deal_id: int, stage_id: str):
+    # (Оставляем как было)
+    url_deal_update = BITRIX_PARTNER_WEBHOOK + "crm.deal.update.json"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url_deal_update,
+                                    json={'id': deal_id, 'fields': {'STAGE_ID': stage_id}}) as response:
+                return 'result' in (await response.json())
+    except Exception:
         return False
