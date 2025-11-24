@@ -506,7 +506,7 @@ async def handle_bitrix_webhook(request: web.Request):
             if pid:
                 ddata = await bitrix_api.get_deal(did)
                 opp = float(ddata.get('OPPORTUNITY', 0)) if ddata else 0
-                sname = get_client_stage_name(status)
+                sname = get_client_stage_name(status.split('/')[-1])
                 await db.update_client_status_and_payout(did, sname, opp)
 
                 if status == config.BITRIX_CLIENT_STAGE_WIN:
