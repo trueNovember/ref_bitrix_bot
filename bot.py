@@ -487,28 +487,47 @@ async def handle_telegram_POST(request: web.Request):
 
 async def handle_bitrix_webhook(request: web.Request):
     try:
-        data = request.query
+        # 1. Логируем все параметры запроса (GET query)
+        # Битрикс присылает данные в URL (query params), а не в body
+        data = dict(request.query)
+        logging.info(f"📥 [BITRIX RAW QUERY]: {data}")
+
+        # Проверка секрета
         if data.get('secret') != config.BITRIX_INCOMING_SECRET:
+            logging.warning(f"⛔ Неверный секрет! Получено: {data.get('secret')}")
             return web.Response(status=403, text="Forbidden")
 
         evt = data.get('event_type')
         status = data.get('status')
         did = int(data.get('deal_id', 0))
         uid = int(data.get('user_id', 0))
-        print(evt, status, did)
+
+        logging.info(f"🔎 Обработка события: {evt} | Deal: {did} | User: {uid} | Status: {status}")
+
         if evt == 'partner_verification' and uid:
+            logging.info(f"👤 Проверка партнера {uid}...")
             cur = await db.get_partner_status(uid)
+            logging.info(f"   Текущий статус: {cur}, Новый: {status}")
+
             if cur != status:
                 await process_partner_verification(0, uid, status)  # 0 = system
+            else:
+                logging.info("   Статусы совпадают, пропускаем.")
 
         elif evt == 'client_deal_update':
+            logging.info(f"💼 Обновление клиента (сделка {did})...")
             pid, cname = await db.get_partner_and_client_by_deal_id(did)
+
             if pid:
+                logging.info(f"   Партнер найден: {pid}, Клиент: {cname}")
                 ddata = await bitrix_api.get_deal(did)
-                print(ddata)
+
+                # Логируем, что вернул API Битрикса по сделке
+                logging.info(f"   Данные сделки из API: {ddata}")
+
                 opp = float(ddata.get('OPPORTUNITY', 0)) if ddata else 0
-                print(opp)
-                sname = get_client_stage_name(status.split('/')[-1])
+                sname = get_client_stage_name(status)
+
                 await db.update_client_status_and_payout(did, sname, opp)
 
                 if status == config.BITRIX_CLIENT_STAGE_WIN:
@@ -517,10 +536,12 @@ async def handle_bitrix_webhook(request: web.Request):
                     await bot.send_message(pid, f"❌ Клиент <b>{escape(cname)}</b> отказ.")
                 elif status == config.BITRIX_CLIENT_STAGE_2:
                     await bot.send_message(pid, f"ℹ️ Встреча с клиентом <b>{escape(cname)}</b>.")
+            else:
+                logging.warning(f"⚠️ Сделка {did} не найдена в таблице clients!")
 
         return web.Response(text="OK")
     except Exception as e:
-        logging.error(f"Bitrix webhook error: {e}")
+        logging.error(f"❌ Bitrix webhook error: {e}", exc_info=True)
         return web.Response(status=500)
 
 
