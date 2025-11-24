@@ -495,7 +495,7 @@ async def handle_bitrix_webhook(request: web.Request):
 
         # === ВОТ ЗДЕСЬ ИЗМЕНЕНИЕ ===
         # Проверяем STAGE_ID, если нет - берем status
-        status_or_stage_id = data.get('STAGE_ID') or data.get('status')
+        status_or_stage_id = data.get('STAGE_ID')
         # ===========================
 
         did = int(data.get('deal_id', 0))
@@ -515,7 +515,6 @@ async def handle_bitrix_webhook(request: web.Request):
                 # Используем полученный ID стадии
                 sname = get_client_stage_name(status_or_stage_id)
                 await db.update_client_status_and_payout(did, sname, opp)
-
                 # Сравниваем с константами (которые должны быть ID стадий)
                 if status_or_stage_id == config.BITRIX_CLIENT_STAGE_WIN:
                     await bot.send_message(pid, f"✅ С клиентом <b>{escape(cname)}</b> договор! Сумма: {opp:,.0f}")
