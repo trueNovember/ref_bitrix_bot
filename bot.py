@@ -5,7 +5,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, Update
 from aiogram.client.default import DefaultBotProperties
 from html import escape
 import math
@@ -63,7 +63,7 @@ async def cmd_cancel(message: Message, state: FSMContext):
 async def process_agree(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Отлично! Давайте начнем регистрацию.")
     await callback.message.answer("Пожалуйста, выберите, кем вы являетесь:", reply_markup=kb.get_role_keyboard())
-    await state.set_state(PartnerRegistration.waiting_for_role)  # <-- Сначала Роль
+    await state.set_state(PartnerRegistration.waiting_for_role)
     await callback.answer()
 
 
@@ -96,14 +96,12 @@ async def process_phone(message: Message, state: FSMContext):
 
     await state.clear()
 
-    # Создаем сделку с ролью
     deal_id = await bitrix_api.create_partner_deal(full_name, phone, user_id, username, role)
 
     if deal_id:
         await db.add_partner(user_id, full_name, phone, deal_id, role)
         await message.answer("⏳ Заявка принята! Менеджер скоро свяжется с вами.", reply_markup=ReplyKeyboardRemove())
 
-        # Уведомление админам (Junior)
         notif_text = (f"🔔 <b>Новый партнер!</b>\n{escape(full_name)}\nRole: {role}\nTel: {phone}")
         keyboard = kb.get_verification_keyboard(user_id)
         for admin_id in await db.get_junior_admin_ids():
@@ -135,7 +133,6 @@ async def client_name_received(message: Message, state: FSMContext):
 
 @dp.message(ClientSubmission.waiting_for_client_phone)
 async def client_phone_received(message: Message, state: FSMContext):
-    # Очистка номера
     raw_phone = message.text
     cleaned = re.sub(r'\D', '', raw_phone)
     if cleaned.startswith('8') and len(cleaned) == 11:
@@ -149,11 +146,9 @@ async def client_phone_received(message: Message, state: FSMContext):
 
     formatted_phone = '+' + cleaned
 
-    # === ПРОВЕРКА НА ДУБЛИКАТ ===
     contact_id = await bitrix_api.check_contact_exists_by_phone(formatted_phone)
 
     if contact_id:
-        # Клиент есть -> Уведомляем партнера, создаем алерт для менеджера
         partner_data = await db.get_partner_data(message.from_user.id)
         c_name = (await state.get_data()).get('client_name')
 
@@ -166,7 +161,6 @@ async def client_phone_received(message: Message, state: FSMContext):
         )
         await state.clear()
         return
-    # =============================
 
     await state.update_data(client_phone=formatted_phone)
     await message.answer("✅ Введите адрес квартиры (Улица, дом, кв...):", reply_markup=kb.get_cancel_keyboard())
@@ -176,7 +170,6 @@ async def client_phone_received(message: Message, state: FSMContext):
 @dp.message(ClientSubmission.waiting_for_client_address)
 async def client_address_received(message: Message, state: FSMContext):
     await state.update_data(client_address=message.text)
-    # Спрашиваем площадь (можно пропустить)
     await message.answer("Введите площадь квартиры (м2) или нажмите 'Пропустить':", reply_markup=kb.get_skip_keyboard())
     await state.set_state(ClientSubmission.waiting_for_client_area)
 
@@ -272,6 +265,26 @@ async def show_my_clients(message: Message, state: FSMContext, offset: int = 0):
 
 # ================= WEBHOOKS =================
 
+async def handle_telegram_webhook(request: web.Request):
+    """
+    Обработчик вебхука Telegram. Читает JSON, создает объект Update и передает в Dispatcher.
+    """
+    try:
+        # 1. Читаем JSON (обязательно await!)
+        data = await request.json()
+
+        # 2. Создаем объект Update (aiogram 3.x требует объект, а не dict, но feed_webhook_update умеет работать и с dict)
+        # Однако лучше явно убедиться, что мы передаем то, что нужно.
+        # Метод feed_webhook_update принимает (bot, update: dict | Update)
+        await dp.feed_webhook_update(bot, data)
+
+        return web.Response(text="OK")
+    except Exception as e:
+        logging.error(f"Error handling Telegram webhook: {e}")
+        # Возвращаем 200, чтобы Telegram не спамил повторами при ошибке
+        return web.Response(text="Error", status=200)
+
+
 async def handle_bitrix_webhook(request: web.Request):
     data = request.query
     if data.get('secret') != config.BITRIX_INCOMING_SECRET:
@@ -281,7 +294,6 @@ async def handle_bitrix_webhook(request: web.Request):
     status_or_stage = data.get('status')
     deal_id = int(data.get('deal_id', 0))
 
-    # 1. Верификация партнера
     if event_type == 'partner_verification':
         user_id = int(data.get('user_id', 0))
         if user_id:
@@ -293,11 +305,9 @@ async def handle_bitrix_webhook(request: web.Request):
                 elif status_or_stage == 'rejected':
                     await bot.send_message(user_id, "❌ Заявка отклонена.", reply_markup=ReplyKeyboardRemove())
 
-    # 2. Обновление клиента
     elif event_type == 'client_deal_update':
         partner_id, client_name = await db.get_partner_and_client_by_deal_id(deal_id)
         if partner_id:
-            # Получаем актуальные данные сделки (Сумму)
             deal_data = await bitrix_api.get_deal(deal_id)
             opportunity = 0.0
             if deal_data and 'OPPORTUNITY' in deal_data:
@@ -309,12 +319,10 @@ async def handle_bitrix_webhook(request: web.Request):
             stage_name = get_client_stage_name(status_or_stage)
             await db.update_client_status_and_payout(deal_id, stage_name, opportunity)
 
-            # Уведомления
             if status_or_stage == config.BITRIX_CLIENT_STAGE_WIN:
                 await bot.send_message(partner_id,
                                        f"✅ С клиентом <b>{client_name}</b> заключен договор! Сумма: {opportunity}")
             elif status_or_stage == config.BITRIX_CLIENT_STAGE_LOSE:
-                # <-- НОВОЕ: Уведомление об отказе
                 await bot.send_message(partner_id, f"❌ Клиент <b>{client_name}</b> перешел в статус Отказ.")
             elif status_or_stage == config.BITRIX_CLIENT_STAGE_2:
                 await bot.send_message(partner_id, f"ℹ️ Назначена встреча с клиентом <b>{client_name}</b>.")
@@ -322,8 +330,6 @@ async def handle_bitrix_webhook(request: web.Request):
     return web.Response(text="OK")
 
 
-# (Остальной код main, on_startup без изменений, кроме того, что они импортируют новые функции)
-# В on_startup убедитесь, что await db.init_db() вызывается.
 async def on_startup(app):
     await db.init_db()
     webhook_url = config.BASE_WEBHOOK_URL + config.TELEGRAM_WEBHOOK_PATH
@@ -331,7 +337,8 @@ async def on_startup(app):
 
 
 def main():
-    app.router.add_post(config.TELEGRAM_WEBHOOK_PATH, lambda r: dp.feed_webhook_update(bot, r.json()))  # Simplified
+    # ИСПРАВЛЕНО: Используем именованную асинхронную функцию
+    app.router.add_post(config.TELEGRAM_WEBHOOK_PATH, handle_telegram_webhook)
     app.router.add_post(config.BITRIX_WEBHOOK_PATH, handle_bitrix_webhook)
     app.on_startup.append(on_startup)
     web.run_app(app, host=config.WEB_SERVER_HOST, port=config.WEB_SERVER_PORT)
