@@ -1,4 +1,3 @@
-# bot.py
 import re
 import logging
 from aiohttp import web
