@@ -60,7 +60,8 @@ def get_client_stage_name(stage_id: str) -> str:
 async def process_partner_verification(admin_id: int, partner_user_id: int, new_status: str,
                                        callback: CallbackQuery = None):
     """
-    Ядро верификации (используется и в кнопках, и в команде /verify).
+    Ядро верификации.
+    Позволяет менять статус даже если партнер уже был отклонен (re-verification).
     """
     try:
         partner_data = await db.get_partner_data(partner_user_id)
@@ -74,17 +75,17 @@ async def process_partner_verification(admin_id: int, partner_user_id: int, new_
 
         partner_name = partner_data.get('full_name', f'ID: {partner_user_id}')
 
-        # Обновляем статус в БД
+        # 1. Обновляем статус в БД
         await db.set_partner_status(partner_user_id, new_status)
 
-        # Двигаем сделку в Битрикс
+        # 2. Двигаем сделку в Битрикс
         deal_id = await db.get_partner_deal_id_by_user_id(partner_user_id)
         if deal_id:
             target_stage = config.BITRIX_PARTNER_VERIFIED_STAGE_ID if new_status == 'verified' else config.BITRIX_PARTNER_REJECTED_STAGE_ID
             if target_stage:
                 await bitrix_api.move_deal_stage(deal_id, target_stage)
 
-        # Уведомляем партнера
+        # 3. Уведомляем партнера
         if new_status == 'verified':
             await bot.send_message(partner_user_id,
                                    "✅ Вы верифицированный партнер. Теперь вы можете отправлять нам клиентов!",
@@ -93,19 +94,23 @@ async def process_partner_verification(admin_id: int, partner_user_id: int, new_
             await bot.send_message(partner_user_id, "❌ К сожалению, ваша заявка была отклонена.",
                                    reply_markup=ReplyKeyboardRemove())
 
-        # Ответ админу
+        # 4. Ответ админу
         admin_text = f"Партнер {escape(partner_name)} (ID: {partner_user_id}) -> {new_status}."
         if callback:
-            await callback.message.edit_text(callback.message.text + f"\n\n<b>Итог:</b> {new_status.capitalize()}")
+            # Пытаемся отредактировать сообщение, если оно не слишком старое
+            try:
+                await callback.message.edit_text(callback.message.text + f"\n\n<b>Итог:</b> {new_status.capitalize()}")
+            except:
+                pass
             await callback.answer(admin_text)
-        else:
+        elif admin_id > 0:
             await bot.send_message(admin_id, f"✅ {admin_text}")
 
     except Exception as e:
         logging.error(f"Ошибка верификации: {e}")
         if callback:
             await callback.answer("Ошибка при обработке.", show_alert=True)
-        else:
+        elif admin_id > 0:
             await bot.send_message(admin_id, f"Ошибка: {e}")
 
 
@@ -155,7 +160,7 @@ async def process_agree(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.message(PartnerRegistration.waiting_for_role)
+@dp.message(PartnerRegistration.waiting_for_role, F.text)
 async def process_role(message: Message, state: FSMContext):
     if message.text not in ["Риэлтор", "Дизайнер", "Приемщик", "Другое"]:
         await message.answer("Пожалуйста, выберите вариант из меню.")
@@ -165,7 +170,7 @@ async def process_role(message: Message, state: FSMContext):
     await state.set_state(PartnerRegistration.waiting_for_full_name)
 
 
-@dp.message(PartnerRegistration.waiting_for_full_name)
+@dp.message(PartnerRegistration.waiting_for_full_name, F.text)
 async def process_name(message: Message, state: FSMContext):
     await state.update_data(full_name=message.text)
     await message.answer("Теперь поделитесь номером телефона.", reply_markup=kb.get_request_phone_keyboard())
@@ -182,9 +187,11 @@ async def process_phone(message: Message, state: FSMContext):
     username = message.from_user.username
     await state.clear()
 
+    # 1. Создаем сделку
     deal_id = await bitrix_api.create_partner_deal(full_name, phone, user_id, username, role)
 
     if deal_id:
+        # 2. Сохраняем в БД (теперь add_partner поддерживает role)
         await db.add_partner(user_id, full_name, phone, deal_id, role)
         await message.answer("⏳ Ваша заявка принята. Менеджер свяжется с вами.", reply_markup=ReplyKeyboardRemove())
 
@@ -202,7 +209,7 @@ async def process_phone(message: Message, state: FSMContext):
             except:
                 pass
     else:
-        await message.answer("Произошла ошибка. Попробуйте позже.", reply_markup=ReplyKeyboardRemove())
+        await message.answer("Произошла ошибка при регистрации. Попробуйте позже.", reply_markup=ReplyKeyboardRemove())
 
 
 @dp.message(PartnerRegistration.waiting_for_phone)
@@ -224,14 +231,14 @@ async def start_client_submission(message: Message, state: FSMContext):
     await state.set_state(ClientSubmission.waiting_for_client_name)
 
 
-@dp.message(ClientSubmission.waiting_for_client_name)
+@dp.message(ClientSubmission.waiting_for_client_name, F.text)
 async def client_name_received(message: Message, state: FSMContext):
     await state.update_data(client_name=message.text)
     await message.answer("Введите номер телефона клиента:", reply_markup=kb.get_cancel_keyboard())
     await state.set_state(ClientSubmission.waiting_for_client_phone)
 
 
-@dp.message(ClientSubmission.waiting_for_client_phone)
+@dp.message(ClientSubmission.waiting_for_client_phone, F.text)
 async def client_phone_received(message: Message, state: FSMContext):
     phone_text = message.text
     cleaned = re.sub(r'\D', '', phone_text)
@@ -264,14 +271,14 @@ async def client_phone_received(message: Message, state: FSMContext):
     await state.set_state(ClientSubmission.waiting_for_client_address)
 
 
-@dp.message(ClientSubmission.waiting_for_client_address)
+@dp.message(ClientSubmission.waiting_for_client_address, F.text)
 async def client_address_received(message: Message, state: FSMContext):
     await state.update_data(client_address=message.text)
     await message.answer("Введите <b>площадь квартиры</b> (м²) или 'Пропустить':", reply_markup=kb.get_skip_keyboard())
     await state.set_state(ClientSubmission.waiting_for_client_area)
 
 
-@dp.message(ClientSubmission.waiting_for_client_area)
+@dp.message(ClientSubmission.waiting_for_client_area, F.text)
 async def client_area_received(message: Message, state: FSMContext):
     area = message.text if message.text != "➡️ Пропустить" else None
     await state.update_data(client_area=area)
@@ -279,18 +286,21 @@ async def client_area_received(message: Message, state: FSMContext):
     await state.set_state(ClientSubmission.waiting_for_client_comment)
 
 
-@dp.message(ClientSubmission.waiting_for_client_comment)
+@dp.message(ClientSubmission.waiting_for_client_comment, F.text)
 async def client_comment_received(message: Message, state: FSMContext):
     comm = message.text if message.text != "➡️ Пропустить" else None
     await state.update_data(client_comment=comm)
     data = await state.get_data()
 
+    client_name = data.get('client_name') or "Не указано"
+    client_address = data.get('client_address') or "Не указано"
+
     txt = (
         f"<b>Проверьте данные:</b>\n\n"
-        f"👤 <b>Имя:</b> {escape(data['client_name'])}\n"
-        f"📞 <b>Тел:</b> {data['client_phone']}\n"
-        f"🏠 <b>Адрес:</b> {escape(data['client_address'])}\n"
-        f"📐 <b>Площадь:</b> {data['client_area'] or '-'}\n"
+        f"👤 <b>Имя:</b> {escape(client_name)}\n"
+        f"📞 <b>Тел:</b> {data.get('client_phone', '-')}\n"
+        f"🏠 <b>Адрес:</b> {escape(client_address)}\n"
+        f"📐 <b>Площадь:</b> {escape(data.get('client_area') or '-')}\n"
         f"💬 <b>Коммент:</b> {escape(comm or '-')}\n\n"
         f"Все верно?"
     )
@@ -382,7 +392,7 @@ async def noop_cb(c: CallbackQuery): await c.answer()
 
 
 # =================================================================
-# === АДМИНСКИЕ КОМАНДЫ (ВОССТАНОВЛЕНЫ) ===========================
+# === АДМИНСКИЕ КОМАНДЫ ===========================================
 # =================================================================
 
 @dp.message(Command("verify"), IsAdminFilter())
@@ -468,7 +478,7 @@ async def cmd_set_info_text(message: Message):
 
 
 # =================================================================
-# === ВЕБ-СЕРВЕР (ОРИГИНАЛЬНАЯ ВЕРСИЯ) ============================
+# === ВЕБ-СЕРВЕР ==================================================
 # =================================================================
 
 async def handle_telegram_GET(request: web.Request):
@@ -492,30 +502,25 @@ async def handle_bitrix_webhook(request: web.Request):
             return web.Response(status=403, text="Forbidden")
 
         evt = data.get('event_type')
-
-        # === ВОТ ЗДЕСЬ ИЗМЕНЕНИЕ ===
-        # Проверяем STAGE_ID, если нет - берем status
-        status_or_stage_id = data.get('STAGE_ID')
-        # ===========================
-
+        status_or_stage_id = data.get('STAGE_ID') or data.get('status')
         did = int(data.get('deal_id', 0))
         uid = int(data.get('user_id', 0))
 
         if evt == 'partner_verification' and uid:
             cur = await db.get_partner_status(uid)
+            # Если статус изменился, вызываем ядро верификации
+            # Оно теперь умеет перезаписывать статус (например, с rejected на verified)
             if cur != status_or_stage_id:
-                await process_partner_verification(0, uid, status_or_stage_id)  # 0 = system
+                await process_partner_verification(0, uid, status_or_stage_id)
 
         elif evt == 'client_deal_update':
             pid, cname = await db.get_partner_and_client_by_deal_id(did)
             if pid:
                 ddata = await bitrix_api.get_deal(did)
                 opp = float(ddata.get('OPPORTUNITY', 0)) if ddata else 0
-
-                # Используем полученный ID стадии
                 sname = get_client_stage_name(status_or_stage_id)
                 await db.update_client_status_and_payout(did, sname, opp)
-                # Сравниваем с константами (которые должны быть ID стадий)
+
                 if status_or_stage_id == config.BITRIX_CLIENT_STAGE_WIN:
                     await bot.send_message(pid, f"✅ С клиентом <b>{escape(cname)}</b> договор! Сумма: {opp:,.0f}")
                 elif status_or_stage_id == config.BITRIX_CLIENT_STAGE_LOSE:
@@ -532,17 +537,6 @@ async def handle_bitrix_webhook(request: web.Request):
 async def on_startup(app):
     await db.init_db()
     await db.add_admin(config.SUPER_ADMIN_ID, "SUPER", "senior")
-    if not await db.get_setting("partnership_info"): await db.set_setting("partnership_info", "Инфо...")
-    if not await db.get_setting("welcome_text"): await db.set_setting("welcome_text", "Приветствие...")
-
-    url = config.BASE_WEBHOOK_URL + config.TELEGRAM_WEBHOOK_PATH
-    await bot.set_webhook(url=url, secret_token=config.BITRIX_INCOMING_SECRET)
-
-
-async def on_startup(app):
-    await db.init_db()
-    await db.add_admin(config.SUPER_ADMIN_ID, "SUPER", "senior")
-    # Установка дефолтных текстов
     if not await db.get_setting("partnership_info"): await db.set_setting("partnership_info", "Инфо...")
     if not await db.get_setting("welcome_text"): await db.set_setting("welcome_text", "Приветствие...")
 
