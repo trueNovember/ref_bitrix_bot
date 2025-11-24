@@ -5,7 +5,7 @@ from config import (
     BITRIX_PARTNER_WEBHOOK, BITRIX_CLIENT_WEBHOOK,
     PARTNER_FUNNEL_ID, PARTNER_DEAL_TG_ID_FIELD, PARTNER_DEAL_TG_USERNAME_FIELD,
     BITRIX_CLIENT_FUNNEL_ID, PARTNER_DEAL_FIELD,
-    PARTNER_ROLE_FIELD, CLIENT_AREA_FIELD, CLIENT_ADDRESS_DEAL_FIELD
+    PARTNER_ROLE_FIELD, CLIENT_AREA_FIELD, CLIENT_ADDRESS_DEAL_FIELD,BITRIX_CLIENT_STAGE_1
 )
 
 
@@ -150,7 +150,7 @@ async def create_duplicate_alert_deal(client_name: str, client_phone: str, partn
 
     deal_fields = {
         'TITLE': deal_title,
-        'CATEGORY_ID': PARTNER_FUNNEL_ID,  # Воронка партнеров (11)
+        'CATEGORY_ID': BITRIX_CLIENT_STAGE_1,  # Воронка партнеров (11)
         'COMMENTS': description,
         'SOURCE_ID': 'PARTNER_BOT'
     }
