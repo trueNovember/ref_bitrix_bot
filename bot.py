@@ -571,11 +571,11 @@ async def handle_bitrix_webhook(request: web.Request):
                 # Сравниваем ID со значениями из конфига
                 logging.info(f"🐛 [DEBUG] Сравниваем '{status_or_stage_id}' с WIN='{config.BITRIX_CLIENT_STAGE_WIN}'")
 
-                if status_or_stage_id == config.BITRIX_CLIENT_STAGE_WIN:
+                if sname == config.BITRIX_CLIENT_STAGE_WIN:
                     await bot.send_message(pid, f"✅ С клиентом <b>{escape(cname)}</b> договор! Сумма: {opp:,.0f}")
-                elif status_or_stage_id == config.BITRIX_CLIENT_STAGE_LOSE:
+                elif sname == config.BITRIX_CLIENT_STAGE_LOSE:
                     await bot.send_message(pid, f"❌ Клиент <b>{escape(cname)}</b> отказ.")
-                elif status_or_stage_id == config.BITRIX_CLIENT_STAGE_2:
+                elif sname == config.BITRIX_CLIENT_STAGE_2:
                     await bot.send_message(pid, f"ℹ️ Встреча с клиентом <b>{escape(cname)}</b>.")
 
         return web.Response(text="OK")
