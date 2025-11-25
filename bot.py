@@ -25,6 +25,46 @@ bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"
 dp = Dispatcher()
 app = web.Application()
 
+# =================================================================
+# === НАСТРОЙКА СТАДИЙ (MAPPING) ==================================
+# =================================================================
+
+# СЛОВАРЬ: "Текст из Битрикса" -> "ID из конфига"
+# Если Битрикс присылает название словами, мы находим тут нужный ID.
+STAGE_NAME_MAPPING = {
+    "Клиенты в обработке": config.BITRIX_CLIENT_STAGE_1,
+    "С клиентом назначена встреча": config.BITRIX_CLIENT_STAGE_2,
+    "Расчет сметы": config.BITRIX_CLIENT_STAGE_3,
+    "С клиентом заключен договор": config.BITRIX_CLIENT_STAGE_WIN,
+    "Отказ клиента": config.BITRIX_CLIENT_STAGE_LOSE,
+}
+
+
+def normalize_stage(incoming_value: str) -> str:
+    """
+    Превращает входящее значение (Название или ID) в ID стадии.
+    """
+    if not incoming_value:
+        return ""
+
+    # 1. Пробуем найти по названию в нашем словаре
+    if incoming_value in STAGE_NAME_MAPPING:
+        return STAGE_NAME_MAPPING[incoming_value]
+
+    # 2. Если не нашли, возможно это уже ID, возвращаем как есть
+    return incoming_value
+
+
+def get_client_stage_name(stage_id: str) -> str:
+    """Превращает системный ID стадии в понятное название (для сообщений партнеру)."""
+    stages_map = {
+        config.BITRIX_CLIENT_STAGE_1: "Клиенты в обработке",
+        config.BITRIX_CLIENT_STAGE_2: "С клиентом назначена встреча",
+        config.BITRIX_CLIENT_STAGE_3: "Расчет сметы",
+        config.BITRIX_CLIENT_STAGE_WIN: "С клиентом заключен договор",
+        config.BITRIX_CLIENT_STAGE_LOSE: "Отказ клиента"
+    }
+    return stages_map.get(stage_id, stage_id)
 
 # =================================================================
 # === ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ И ФУНКЦИИ ============================
@@ -497,83 +537,51 @@ async def handle_telegram_POST(request: web.Request):
 
 async def handle_bitrix_webhook(request: web.Request):
     try:
-        # 1. Превращаем параметры запроса в словарь для удобства чтения
         data = dict(request.query)
         logging.info(f"🐛 [DEBUG] ВХОДЯЩИЙ ВЕБХУК: {data}")
 
         if data.get('secret') != config.BITRIX_INCOMING_SECRET:
-            logging.warning("⛔ [DEBUG] Неверный секрет (secret token)!")
+            logging.warning("⛔ [DEBUG] Неверный секрет!")
             return web.Response(status=403, text="Forbidden")
 
         evt = data.get('event_type')
-        # Битрикс может присылать ID стадии в разных полях, берем любое доступное
-        status_or_stage_id = data.get('STAGE_ID') or data.get('status')
+        raw_stage = data.get('STAGE_ID') or data.get('status')
+        # === НОРМАЛИЗАЦИЯ (Имя -> ID) ===
+        status_or_stage_id = normalize_stage(raw_stage)
+        logging.info(f"🐛 [DEBUG] Raw stage: '{raw_stage}' -> Normalized: '{status_or_stage_id}'")
+
         did = int(data.get('deal_id', 0))
         uid = int(data.get('user_id', 0))
 
-        logging.info(
-            f"🐛 [DEBUG] Разобрали данные: Событие='{evt}', DealID={did}, UserID={uid}, StageID='{status_or_stage_id}'")
-
-        # --- Логика Верификации Партнера ---
         if evt == 'partner_verification' and uid:
-            logging.info(f"🐛 [DEBUG] Обработка верификации партнера {uid}...")
             cur = await db.get_partner_status(uid)
-            logging.info(f"🐛 [DEBUG] Текущий статус в БД: '{cur}'. Пришел новый: '{status_or_stage_id}'")
-
             if cur != status_or_stage_id:
-                logging.info("🐛 [DEBUG] Статусы отличаются, запускаем процесс обновления...")
                 await process_partner_verification(0, uid, status_or_stage_id)
-            else:
-                logging.info("🐛 [DEBUG] Статус не изменился, пропускаем.")
 
-        # --- Логика Обновления Клиента ---
         elif evt == 'client_deal_update':
-            logging.info(f"🐛 [DEBUG] Обработка обновления КЛИЕНТА (Сделка {did})...")
-
-            # 1. Ищем партнера в базе
             pid, cname = await db.get_partner_and_client_by_deal_id(did)
-            logging.info(f"🐛 [DEBUG] Результат поиска в БД -> PartnerID: {pid}, ClientName: '{cname}'")
-
             if pid:
-                # 2. Запрашиваем актуальную сумму из Битрикса
                 ddata = await bitrix_api.get_deal(did)
-                logging.info(f"🐛 [DEBUG] Ответ API Битрикс (get_deal): {ddata}")
-
                 opp = float(ddata.get('OPPORTUNITY', 0)) if ddata else 0
 
-                # 3. Обновляем статус в БД
+                # Получаем понятное название для БД
                 sname = get_client_stage_name(status_or_stage_id)
-                logging.info(f"🐛 [DEBUG] Обновляем в БД: Статус='{sname}', Сумма={opp}")
                 await db.update_client_status_and_payout(did, sname, opp)
 
-                # 4. Проверяем условия для уведомления
-                # Логируем то, с чем сравниваем
-                logging.info(f"🐛 [DEBUG] Сравнение стадий: Пришло '{status_or_stage_id}'")
-                logging.info(f"   - Ждем WIN: '{config.BITRIX_CLIENT_STAGE_WIN}'")
-                logging.info(f"   - Ждем LOSE: '{config.BITRIX_CLIENT_STAGE_LOSE}'")
-                logging.info(f"   - Ждем STAGE_2: '{config.BITRIX_CLIENT_STAGE_2}'")
+                # Сравниваем ID со значениями из конфига
+                logging.info(f"🐛 [DEBUG] Сравниваем '{status_or_stage_id}' с WIN='{config.BITRIX_CLIENT_STAGE_WIN}'")
 
                 if status_or_stage_id == config.BITRIX_CLIENT_STAGE_WIN:
-                    logging.info("✅ [DEBUG] Совпадение WIN! Отправляем сообщение.")
                     await bot.send_message(pid, f"✅ С клиентом <b>{escape(cname)}</b> договор! Сумма: {opp:,.0f}")
-
                 elif status_or_stage_id == config.BITRIX_CLIENT_STAGE_LOSE:
-                    logging.info("❌ [DEBUG] Совпадение LOSE! Отправляем сообщение.")
                     await bot.send_message(pid, f"❌ Клиент <b>{escape(cname)}</b> отказ.")
-
                 elif status_or_stage_id == config.BITRIX_CLIENT_STAGE_2:
-                    logging.info("ℹ️ [DEBUG] Совпадение STAGE_2! Отправляем сообщение.")
                     await bot.send_message(pid, f"ℹ️ Встреча с клиентом <b>{escape(cname)}</b>.")
-                else:
-                    logging.info("💤 [DEBUG] Стадия не требует уведомления.")
-            else:
-                logging.warning(f"⚠️ [DEBUG] Партнер для сделки {did} не найден в локальной базе!")
 
         return web.Response(text="OK")
     except Exception as e:
-        logging.error(f"🔥 [DEBUG] Ошибка в вебхуке: {e}", exc_info=True)
+        logging.error(f"Bitrix webhook error: {e}", exc_info=True)
         return web.Response(status=500)
-
 
 async def on_startup(app):
     await db.init_db()
