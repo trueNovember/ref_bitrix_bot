@@ -547,7 +547,7 @@ async def handle_bitrix_webhook(request: web.Request):
         evt = data.get('event_type')
         raw_stage = data.get('STAGE_ID') or data.get('status')
         # === НОРМАЛИЗАЦИЯ (Имя -> ID) ===
-        status_or_stage_id = normalize_stage(raw_stage)
+        status_or_stage_id = get_client_stage_name(raw_stage)
         logging.info(f"🐛 [DEBUG] Raw stage: '{raw_stage}' -> Normalized: '{status_or_stage_id}'")
 
         did = int(data.get('deal_id', 0))
