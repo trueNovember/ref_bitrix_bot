@@ -358,15 +358,61 @@ async def retry_client(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(F.text == "📈 Статистика")
 async def show_statistics(message: Message):
-    if await db.get_partner_status(message.from_user.id) != 'verified': return
-    stats = await db.get_partner_statistics(message.from_user.id)
-    text = (
-        f"<b>📊 Ваша статистика:</b>\n\n"
-        f"👥 <b>Клиентов:</b> {stats['total_clients']}\n"
-        f"💰 <b>Выплаты (в работе/получено):</b> {stats['total_payout']:,.0f} руб."
-    )
-    await message.answer(text)
+    # Проверка прав доступа
+    if await db.get_partner_status(message.from_user.id) != 'verified':
+        return
 
+    # 1. Получаем всех клиентов партнера из БД
+    # Функция get_all_partner_clients возвращает (Имя, Статус, Сумма)
+    clients = await db.get_all_partner_clients(message.from_user.id)
+
+    total_clients = len(clients)
+    sum_in_work = 0.0  # Сумма "В работе"
+    sum_on_approval = 0.0  # Сумма "На согласовании" (Победа)
+
+    details_text = ""
+
+    # Получаем названия стадий из конфига для точного сравнения
+    win_stage_name = get_client_stage_name(config.BITRIX_CLIENT_STAGE_WIN)
+    lose_stage_name = get_client_stage_name(config.BITRIX_CLIENT_STAGE_LOSE)
+
+    # 2. Проходим по списку клиентов и считаем деньги
+    for name, status, payout in clients:
+        payout = payout or 0.0
+
+        if status == win_stage_name:
+            # Если статус "Договор заключен" -> деньги на согласовании
+            sum_on_approval += payout
+            icon = "🟢"
+        elif status == lose_stage_name:
+            # Если статус "Отказ" -> деньги не считаем
+            icon = "🔴"
+        else:
+            # Все остальные статусы -> деньги в работе
+            sum_in_work += payout
+            icon = "🟡"
+
+        # Добавляем строку в список детализации
+        details_text += f"• {escape(name)}: <b>{payout:,.0f} ₽</b> {icon}\n"
+
+    # 3. Формируем итоговое сообщение
+    text = (
+        f"<b>📊 Финансовая статистика:</b>\n\n"
+        f"🟡 <b>В работе:</b> {sum_in_work:,.0f} руб.\n"
+        f"<i>(Прогноз по активным сделкам)</i>\n\n"
+        f"🟢 <b>На согласовании:</b> {sum_on_approval:,.0f} руб.\n"
+        f"<i>(Договор подписан, ожидайте выплату)</i>\n\n"
+        f"👥 <b>Всего клиентов:</b> {total_clients}\n"
+        f"--------------------------\n"
+        f"<b>Детализация:</b>\n"
+        f"{details_text}"
+    )
+
+    # Обрезаем сообщение, если оно длиннее лимита Telegram (4096 символов)
+    if len(text) > 4000:
+        text = text[:4000] + "\n\n... (список обрезан)"
+
+    await message.answer(text)
 
 @dp.message(F.text == "📊 Мои клиенты")
 async def show_my_clients(message: Message, state: FSMContext, offset: int = 0):

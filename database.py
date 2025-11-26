@@ -214,6 +214,20 @@ async def get_all_partner_ids(status: str = 'verified'):
             rows = await cursor.fetchall()
             # Превращаем список кортежей [(123,), (456,)] в простой список [123, 456]
             return [row[0] for row in rows]
+async def get_all_partner_clients(partner_user_id: int):
+    """
+    Возвращает список ВСЕХ клиентов партнера для статистики.
+    Результат: список кортежей [(client_name, status, payout_amount), ...]
+    """
+    async with aiosqlite.connect(DB_NAME) as db:
+        query = """
+            SELECT client_name, status, payout_amount 
+            FROM clients 
+            WHERE partner_user_id = ?
+            ORDER BY client_id DESC
+        """
+        async with db.execute(query, (partner_user_id,)) as cursor:
+            return await cursor.fetchall()
 
 # --- Админы и Настройки ---
 async def add_admin(user_id: int, username: str = "", role: str = 'junior'):
