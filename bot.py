@@ -500,19 +500,22 @@ async def cmd_set_percent(message: Message):
     Использование: /setpercent 10 (означает 10%)
     """
     try:
-        # Берём второе слово из сообщения и пробуем превратить в число
-        value_str = message.text.split()[1]
-        # Заменяем запятую на точку, если вдруг ввели "10,5"
+        parts = message.text.split()
+        # Проверяем, что есть аргумент
+        if len(parts) < 2:
+            raise ValueError
+
+        value_str = parts[1]
         value_float = float(value_str.replace(',', '.'))
 
-        # Сохраняем в таблицу settings
         await db.set_setting("payout_percent", str(value_float))
 
         await message.answer(f"✅ Процент выплаты успешно обновлен: <b>{value_float}%</b>")
     except Exception:
+        # ИСПРАВЛЕНИЕ: Используем &lt; и &gt; вместо < и >, чтобы не ломать HTML-разметку
         await message.answer(
             "⚠️ <b>Ошибка формата.</b>\n"
-            "Используйте: <code>/setpercent <число></code>\n"
+            "Используйте: <code>/setpercent &lt;число&gt;</code>\n"
             "Пример: <code>/setpercent 10</code> или <code>/setpercent 12.5</code>"
         )
 # =================================================================
