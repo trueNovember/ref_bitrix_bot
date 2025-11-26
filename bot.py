@@ -26,45 +26,25 @@ dp = Dispatcher()
 app = web.Application()
 
 # =================================================================
-# === НАСТРОЙКА СТАДИЙ (MAPPING) ==================================
+# === СПИСОК СТАДИЙ ДЛЯ УВЕДОМЛЕНИЙ ===============================
 # =================================================================
 
-# СЛОВАРЬ: "Текст из Битрикса" -> "ID из конфига"
-# Если Битрикс присылает название словами, мы находим тут нужный ID.
-STAGE_NAME_MAPPING = {
-    "Клиенты в обработке": config.BITRIX_CLIENT_STAGE_1,
-    "С клиентом назначена встреча": config.BITRIX_CLIENT_STAGE_2,
-    "Расчет сметы": config.BITRIX_CLIENT_STAGE_3,
-    "С клиентом заключен договор": config.BITRIX_CLIENT_STAGE_WIN,
-    "Отказ клиента": config.BITRIX_CLIENT_STAGE_LOSE,
+# Слева: ТОЧНОЕ название стадии, которое присылает Битрикс (текстом).
+# Справа: Тип уведомления ('win', 'lose', 'meeting').
+NOTIFICATIONS_MAP = {
+    # Успешные стадии
+    "С клиентом заключен договор": "win",
+    "Сделка успешна": "win",
+
+    # Провальные стадии
+    "Отказ клиента": "lose",
+    "Сделка провалена": "lose",
+    "Сделка проиграна": "lose",
+
+    # Промежуточные стадии
+    "С клиентом назначена встреча": "meeting",
+    "Встреча назначена": "meeting"
 }
-
-
-def normalize_stage(incoming_value: str) -> str:
-    """
-    Превращает входящее значение (Название или ID) в ID стадии.
-    """
-    if not incoming_value:
-        return ""
-
-    # 1. Пробуем найти по названию в нашем словаре
-    if incoming_value in STAGE_NAME_MAPPING:
-        return STAGE_NAME_MAPPING[incoming_value]
-
-    # 2. Если не нашли, возможно это уже ID, возвращаем как есть
-    return incoming_value
-
-
-def get_client_stage_name(stage_id: str) -> str:
-    """Превращает системный ID стадии в понятное название (для сообщений партнеру)."""
-    stages_map = {
-        config.BITRIX_CLIENT_STAGE_1: "Клиенты в обработке",
-        config.BITRIX_CLIENT_STAGE_2: "С клиентом назначена встреча",
-        config.BITRIX_CLIENT_STAGE_3: "Расчет сметы",
-        config.BITRIX_CLIENT_STAGE_WIN: "С клиентом заключен договор",
-        config.BITRIX_CLIENT_STAGE_LOSE: "Отказ клиента"
-    }
-    return stages_map.get(stage_id, stage_id)
 
 # =================================================================
 # === ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ И ФУНКЦИИ ============================
@@ -538,51 +518,51 @@ async def handle_telegram_POST(request: web.Request):
 async def handle_bitrix_webhook(request: web.Request):
     try:
         data = dict(request.query)
-        logging.info(f"🐛 [DEBUG] ВХОДЯЩИЙ ВЕБХУК: {data}")
-
         if data.get('secret') != config.BITRIX_INCOMING_SECRET:
-            logging.warning("⛔ [DEBUG] Неверный секрет!")
             return web.Response(status=403, text="Forbidden")
 
         evt = data.get('event_type')
-        raw_stage = data.get('STAGE_ID') or data.get('status')
-        # === НОРМАЛИЗАЦИЯ (Имя -> ID) ===
-        status_or_stage_id = get_client_stage_name(raw_stage)
-        logging.info(f"🐛 [DEBUG] Raw stage: '{raw_stage}' -> Normalized: '{status_or_stage_id}'")
+        # Получаем "как есть" (текст от Битрикса)
+        status_text = data.get('STAGE_ID') or data.get('status')
 
         did = int(data.get('deal_id', 0))
         uid = int(data.get('user_id', 0))
 
+        # --- 1. Верификация Партнера ---
         if evt == 'partner_verification' and uid:
             cur = await db.get_partner_status(uid)
-            if cur != status_or_stage_id:
-                await process_partner_verification(0, uid, status_or_stage_id)
+            if cur != status_text:
+                await process_partner_verification(0, uid, status_text)
 
+        # --- 2. Обновление Клиента ---
         elif evt == 'client_deal_update':
             pid, cname = await db.get_partner_and_client_by_deal_id(did)
             if pid:
                 ddata = await bitrix_api.get_deal(did)
                 opp = float(ddata.get('OPPORTUNITY', 0)) if ddata else 0
 
-                # Получаем понятное название для БД
-                sname = get_client_stage_name(status_or_stage_id)
-                await db.update_client_status_and_payout(did, sname, opp)
+                # Обновляем статус в БД (сохраняем название как есть)
+                await db.update_client_status_and_payout(did, status_text, opp)
 
-                # Сравниваем ID со значениями из конфига
-                logging.info(f"🐛 [DEBUG] Сравниваем '{status_or_stage_id}' с WIN='{config.BITRIX_CLIENT_STAGE_WIN}'")
+                # Проверяем, есть ли статус в нашем списке уведомлений
+                if status_text in NOTIFICATIONS_MAP:
 
-                if sname == config.BITRIX_CLIENT_STAGE_WIN:
-                    await bot.send_message(pid, f"✅ С клиентом <b>{escape(cname)}</b> договор! Сумма: {opp:,.0f}")
-                elif sname == config.BITRIX_CLIENT_STAGE_LOSE:
-                    await bot.send_message(pid, f"❌ Клиент <b>{escape(cname)}</b> отказ.")
-                elif sname == config.BITRIX_CLIENT_STAGE_2:
-                    await bot.send_message(pid, f"ℹ️ Встреча с клиентом <b>{escape(cname)}</b>.")
+                    action_type = NOTIFICATIONS_MAP[status_text]
+
+                    if action_type == "win":
+                        await bot.send_message(pid,
+                                               f"✅ С клиентом <b>{escape(cname)}</b> заключен договор! Сумма: {opp:,.0f} руб.")
+
+                    elif action_type == "lose":
+                        await bot.send_message(pid, f"❌ Клиент <b>{escape(cname)}</b> отказ.")
+
+                    elif action_type == "meeting":
+                        await bot.send_message(pid, f"ℹ️ Встреча с клиентом <b>{escape(cname)}</b> назначена.")
 
         return web.Response(text="OK")
     except Exception as e:
         logging.error(f"Bitrix webhook error: {e}", exc_info=True)
         return web.Response(status=500)
-
 async def on_startup(app):
     await db.init_db()
     await db.add_admin(config.SUPER_ADMIN_ID, "SUPER", "senior")
