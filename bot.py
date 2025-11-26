@@ -34,13 +34,9 @@ app = web.Application()
 NOTIFICATIONS_MAP = {
     # Успешные стадии
     "С клиентом заключен договор": "win",
-    "Сделка успешна": "win",
 
     # Провальные стадии
     "Отказ клиента": "lose",
-    "Сделка провалена": "lose",
-    "Сделка проиграна": "lose",
-
     # Промежуточные стадии
     "С клиентом назначена встреча": "meeting",
     "Встреча назначена": "meeting"
@@ -497,6 +493,28 @@ async def cmd_set_info_text(message: Message):
         await message.answer("/setinfotext info|welcome ТЕКСТ")
 
 
+@dp.message(Command("setpercent"), IsSeniorAdminFilter())
+async def cmd_set_percent(message: Message):
+    """
+    Устанавливает процент выплаты партнеру.
+    Использование: /setpercent 10 (означает 10%)
+    """
+    try:
+        # Берём второе слово из сообщения и пробуем превратить в число
+        value_str = message.text.split()[1]
+        # Заменяем запятую на точку, если вдруг ввели "10,5"
+        value_float = float(value_str.replace(',', '.'))
+
+        # Сохраняем в таблицу settings
+        await db.set_setting("payout_percent", str(value_float))
+
+        await message.answer(f"✅ Процент выплаты успешно обновлен: <b>{value_float}%</b>")
+    except Exception:
+        await message.answer(
+            "⚠️ <b>Ошибка формата.</b>\n"
+            "Используйте: <code>/setpercent <число></code>\n"
+            "Пример: <code>/setpercent 10</code> или <code>/setpercent 12.5</code>"
+        )
 # =================================================================
 # === ВЕБ-СЕРВЕР ==================================================
 # =================================================================
@@ -522,9 +540,7 @@ async def handle_bitrix_webhook(request: web.Request):
             return web.Response(status=403, text="Forbidden")
 
         evt = data.get('event_type')
-        # Получаем "как есть" (текст от Битрикса)
         status_text = data.get('STAGE_ID') or data.get('status')
-
         did = int(data.get('deal_id', 0))
         uid = int(data.get('user_id', 0))
 
@@ -538,23 +554,39 @@ async def handle_bitrix_webhook(request: web.Request):
         elif evt == 'client_deal_update':
             pid, cname = await db.get_partner_and_client_by_deal_id(did)
             if pid:
+                # А. Получаем данные о сумме сделки
                 ddata = await bitrix_api.get_deal(did)
-                opp = float(ddata.get('OPPORTUNITY', 0)) if ddata else 0
+                full_opportunity = float(ddata.get('OPPORTUNITY', 0)) if ddata else 0
 
-                # Обновляем статус в БД (сохраняем название как есть)
-                await db.update_client_status_and_payout(did, status_text, opp)
+                # Б. Получаем актуальный ПРОЦЕНТ из БД
+                percent_str = await db.get_setting("payout_percent", "0")
+                try:
+                    percent_val = float(percent_str)
+                except ValueError:
+                    percent_val = 0.0
 
-                # Проверяем, есть ли статус в нашем списке уведомлений
+                # В. Считаем сумму выплаты
+                # (Сумма * Процент / 100)
+                partner_payout = full_opportunity * (percent_val / 100.0)
+
+                # Г. Если стадия ОТКАЗ -> обнуляем выплату
+                if status_text == config.BITRIX_CLIENT_STAGE_LOSE:
+                    partner_payout = 0.0
+
+                # Д. Обновляем статус и сумму в БД
+                sname = get_client_stage_name(status_text)
+                await db.update_client_status_and_payout(did, sname, partner_payout)
+
+                # Е. Уведомления
                 if status_text in NOTIFICATIONS_MAP:
-
                     action_type = NOTIFICATIONS_MAP[status_text]
 
                     if action_type == "win":
                         await bot.send_message(pid,
-                                               f"✅ С клиентом <b>{escape(cname)}</b> заключен договор! Сумма: {opp:,.0f} руб.")
+                                               f"✅ С клиентом <b>{escape(cname)}</b> заключен договор! Ваша выплата: {partner_payout:,.0f} руб.")
 
                     elif action_type == "lose":
-                        await bot.send_message(pid, f"❌ Клиент <b>{escape(cname)}</b> отказ.")
+                        await bot.send_message(pid, f"❌ Клиент <b>{escape(cname)}</b> отказ. Выплата отменена.")
 
                     elif action_type == "meeting":
                         await bot.send_message(pid, f"ℹ️ Встреча с клиентом <b>{escape(cname)}</b> назначена.")
