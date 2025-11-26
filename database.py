@@ -203,7 +203,17 @@ async def get_partner_statistics(partner_user_id: int):
             "total_clients": total,
             "total_payout": total_payout
         }
-
+async def get_all_partner_ids(status: str = 'verified'):
+    """
+    Возвращает список Telegram ID партнеров с указанным статусом.
+    По умолчанию берем только 'verified' (активных).
+    """
+    async with aiosqlite.connect(DB_NAME) as db:
+        query = "SELECT user_id FROM partners WHERE status = ?"
+        async with db.execute(query, (status,)) as cursor:
+            rows = await cursor.fetchall()
+            # Превращаем список кортежей [(123,), (456,)] в простой список [123, 456]
+            return [row[0] for row in rows]
 
 # --- Админы и Настройки ---
 async def add_admin(user_id: int, username: str = "", role: str = 'junior'):
