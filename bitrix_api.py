@@ -94,7 +94,7 @@ async def create_client_deal(client_name: str, client_phone: str, client_address
         'SOURCE_DESCRIPTION': f"Партнер {partner_name}",
         'CATEGORY_ID': BITRIX_CLIENT_FUNNEL_ID,
         PARTNER_DEAL_FIELD: partner_name,
-        'STAGE_ID': 'C11:UC_JVUM2G'
+        'STAGE_ID': BITRIX_CLIENT_STAGE_1
     }
 
     if client_comment:
@@ -150,9 +150,10 @@ async def create_duplicate_alert_deal(client_name: str, client_phone: str, partn
 
     deal_fields = {
         'TITLE': deal_title,
-        'CATEGORY_ID': BITRIX_CLIENT_STAGE_1,  # Воронка партнеров (11)
+        'CATEGORY_ID': BITRIX_CLIENT_FUNNEL_ID,  # Воронка партнеров (11)
         'COMMENTS': description,
-        'SOURCE_ID': 'PARTNER_BOT'
+        'SOURCE_ID': 'PARTNER_BOT',
+        'STAGE_ID': BITRIX_CLIENT_STAGE_1
     }
 
     try:
